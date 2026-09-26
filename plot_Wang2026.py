@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
 """Make combined plots from all six independent CAPPIBARAS chains.
-
-Produces, by default:
-  1) <prefix>_posteriors_3x3.pdf
-     Three mass-bin columns x three fitted-parameter rows, with major/minor
-     1D posteriors overlaid in every mass-bin panel.
-
-  2) <prefix>_profiles_1x3.pdf
-     Three mass-bin panels with major/minor data plus the posterior-mean
-     total, 1-halo, and 2-halo model components.
-
-  3) <prefix>_corner_b{0,1,2}_{major,minor}.pdf
-     Six individual three-parameter GetDist corner plots.
-
-  4) <prefix>_corner_b{0,1,2}_major_minor.pdf
-     Three overlaid GetDist corner plots comparing major and minor sectors
-     within each stellar-mass bin.
-
-The profile panels also report chi^2, chi^2/N, and PTE for the plotted
-maximum-likelihood chain sample.  The PTE convention matches Chad's
-plot_chains.compute_confidence_corner_multi: N = number of fitted data points
-is used as the chi-square degrees of freedom.
 """
 
 import argparse
@@ -63,7 +42,7 @@ POINT_X_OFFSETS = {
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--job-prefix", default="radio6_gnfw")
+    p.add_argument("--job-prefix", default="Wang2026_gnfw")
     p.add_argument("--output-dir", default=None)
     p.add_argument(
         "--ignore-rows",
