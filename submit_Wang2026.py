@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and run all six independent CAPPIBARAS radio6 fits locally.
-
-This launcher is intentionally Mac/local-machine friendly. It does not use
-submit_chain.py, Slurm, environment modules, Rusty, or NERSC. It generates six
-YAMLs from Wang2026_radio6.yaml and starts six ordinary runchains.py processes
-from the same Python environment used to invoke this script.
-
-Examples
---------
-# Inspect the six commands without starting them:
-python submit_radio.py --dry-run
-
-# Launch all six fits concurrently:
-python submit_radio.py
-
-# Limit each fit to 3 OpenMP/BLAS threads:
-python submit_radio.py --threads-per-fit 3
+"""Generate and run all six independent CAPPIBARAS fits locally.
 """
 
 import argparse
@@ -44,10 +28,10 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--template",
-        default="Wang2026_radio6",
+        default="Wang2026",
         help="Base YAML name in CAPPIBARAS/yamls (without .yaml)",
     )
-    p.add_argument("--job-prefix", default="radio6_gnfw")
+    p.add_argument("--job-prefix", default="Wang2026_gnfw")
     p.add_argument("--threads-per-fit", type=int, default=3)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
@@ -67,7 +51,7 @@ def load_template(name):
 def make_run_yaml(template_doc, mass_bin, sector, out_path):
     doc = copy.deepcopy(template_doc)
     _, like = next(iter(doc["likelihood"].items()))
-    new_name = f"radio6_bin{mass_bin}_{sector}"
+    new_name = f"Wang2026_bin{mass_bin}_{sector}"
 
     like["Measurement"]["mass_bin"] = int(mass_bin)
     like["Measurement"]["sector"] = str(sector)
