@@ -1,0 +1,85 @@
+# Minimal CAPPIBARAS template for ONE of the six independent fits.
+# submit_Wang2026.py clones this template into bin0/1/2 x major/minor YAMLs.
+#
+# Prerequisites outside this file:
+#   1) Put Models/Papers/Wang2026.py in the CAPPIBARAS checkout.
+#   2) In Popik2026.Pressure1h.onehalo, enable the existing PL() lines for
+#      P0, xc_P, and beta_P (alpha_P/gamma_P have zero evolution here).
+
+likelihood:
+  Wang2026:
+    class: SOLikelihoods.SOLikelihood
+
+    Measurement:
+      name: Wang2026
+      profile_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      mass_bin: 0
+      sector: major
+
+    TargetData:
+      name: Wang2026
+      profile_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      mass_bin: 0
+
+shared:
+  Cosmology:
+    name: pyccl
+    h: 0.70
+    Omega_m: 0.25
+    Omega_b: 0.044
+    sigma8: 0.80
+    n_s: 0.96
+    T_CMB: 2.725
+    XH: 0.76
+
+  HaloModel:
+    name: pyccl
+    MassDef: 200c
+    MassFunc: Tinker08
+    HaloBias: Tinker10
+    Concentration: Bhattacharya13
+
+  MapData:
+    name: Wang2026
+    beam_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Data/ACTDR6/ilc_beam.txt
+
+  Projection:
+    name: Popik2026
+
+  BeamConvolution:
+    name: Popik2026
+
+  # Only the observable/filter differs from Popik2026 here.
+  CAP:
+    name: Wang2026
+    inner_radius_arcmin: 1.0
+
+  Pressure:
+    name: Popik2026
+    twohalofix: fixed
+
+params:
+  # Free parameters
+  P0:
+    latex: "P_0"
+    prior: {min: 0.0, max: 60.0}
+    ref: {dist: norm, loc: 2.0, scale: 1.0}
+    proposal: 0.25
+
+  beta_P:
+    latex: "\\beta_P"
+    prior: {min: 0.0, max: 10.0}
+    ref: {dist: norm, loc: 2.6, scale: 0.8}
+    proposal: 0.15
+
+  A_2h_P:
+    latex: "A_{2h,P}"
+    prior: {min: 0.0, max: 60.0}
+    ref: {dist: norm, loc: 1.0, scale: 1.0}
+    proposal: 0.25
+
+  # Fixed shape parameters in Chad's active GNFW convention:
+  # P ~ (x/xc)^(-gamma) [1 + (x/xc)^alpha]^(-(beta-gamma)/alpha)
+  alpha_P: {value: 0.8, latex: "\\alpha_P"}
+  gamma_P: {value: 0.3, latex: "\\gamma_P"}
+  xc_P: {value: 0.497, latex: "x_{c,P}"}
