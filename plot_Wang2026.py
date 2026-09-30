@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """Make combined plots from all six independent CAPPIBARAS chains.
+
+The six GetDist corner plots are combined into one 2x3 figure (major on top,
+minor on bottom). Diagonal titles report the weighted posterior median with
+the 16th/84th percentiles (+/- 1 sigma).
 """
 
 import argparse
@@ -38,6 +42,80 @@ POINT_X_OFFSETS = {
     "major": -0.04,
     "minor": +0.04,
 }
+
+
+# =============================================================================
+# Plot layout and font settings -- edit these.
+# Font sizes set to None use the default from set_plot_style().
+# Spacing: wspace/hspace are fractions of the average panel width/height;
+# w_pad/h_pad are in units of the font size.
+# =============================================================================
+
+# ---- Saving ----------------------------------------------------------------
+# All figures are saved with bbox_inches="tight", which crops to the drawn
+# content. SAVE_PAD_INCHES is the white border left around that crop
+# (matplotlib's default is 0.1 in). Set to 0 for no border at all.
+SAVE_PAD_INCHES = 0.02
+
+# ---- Posterior summaries -----------------------------------------------------
+# A parameter is reported as an upper limit when its posterior is still high at
+# the prior edge (GetDist's rule, same as the original title_limit=1 plots):
+# normalized density at the edge > exp(-1/2) ~ 0.61. Otherwise median +/- 1 sigma.
+# 0 -> quote 68% upper limits (what the original plots showed)
+# 1 -> quote 95% upper limits
+UPPER_LIMIT_LEVEL = 0
+
+# ---- Corner plots (2x3 figure) ----------------------------------------------
+CORNER_FIGSIZE = (18.0, 12.0)
+CORNER_BLOCK_WSPACE = 0.0     # gap between the three mass-bin columns
+CORNER_BLOCK_HSPACE = 0.0     # gap between the major row and the minor row
+CORNER_PANEL_WSPACE = 0.0    # gap between panels inside one corner plot
+CORNER_PANEL_HSPACE = 0.0
+# White space inside each corner block (fractions of the block), which holds the
+# tick labels, axis labels and titles. This is what sets the visible gap between
+# blocks. The top row needs more room on top for its two-line title.
+CORNER_MARGINS_TOP_ROW = dict(left=0.085, right=0.995, bottom=0.07, top=0.90)
+CORNER_MARGINS_BOTTOM_ROW = dict(left=0.085, right=0.995, bottom=0.07, top=0.925)
+CORNER_GETDIST_SIZE = 1.7     # ~width of one panel (inches); scales GetDist line widths
+CORNER_BLOCK_TITLE_FONTSIZE = 13   # mass-bin / "Major axis" title above each corner
+CORNER_VALUE_FONTSIZE = 11          # median +/- 1 sigma titles on the diagonal
+CORNER_LABEL_FONTSIZE = 11         # axis labels (P0, beta_P, A2h)
+CORNER_TICK_FONTSIZE = 9
+CORNER_BLOCK_TITLE_Y = 1.0
+
+# ---- Posterior plot (3x3 figure) --------------------------------------------
+POSTERIOR_FIGSIZE = (12, 9)
+POSTERIOR_PAD = 0.2           # padding between figure edge and subplots
+POSTERIOR_W_PAD = 0.4         # horizontal gap between columns
+POSTERIOR_H_PAD = 0.4         # vertical gap between rows
+POSTERIOR_TITLE_FONTSIZE = None
+POSTERIOR_LABEL_FONTSIZE = None
+POSTERIOR_TICK_FONTSIZE = None
+POSTERIOR_LEGEND_FONTSIZE = None
+
+# ---- Profile plot (1x3 figure) ----------------------------------------------
+PROFILE_FIGSIZE = (16.5, 5.2)
+PROFILE_PAD = 0.2             # padding between figure edge and subplots
+PROFILE_W_PAD = 0          # horizontal gap between the three panels
+PROFILE_LEGEND_SPACE = 0.08   # fraction of figure height reserved for the legend
+PROFILE_LEGEND_Y = -0.015     # vertical position of the legend (figure coords)
+PROFILE_LEGEND_FONTSIZE = 10
+PROFILE_STATS_FONTSIZE = 10  # chi^2 box
+PROFILE_TITLE_FONTSIZE = 11
+PROFILE_LABEL_FONTSIZE = 10
+PROFILE_TICK_FONTSIZE = None
+PROFILE_MARKER_SIZE = 4.5
+PROFILE_CAPSIZE = 2.5
+
+
+def fontsize(size):
+    """Pass fontsize only when it is set, so None keeps the style default."""
+    return {} if size is None else {"fontsize": size}
+
+
+def ticksize(ax, size):
+    if size is not None:
+        ax.tick_params(labelsize=size)
 
 
 def parse_args():
@@ -162,7 +240,6 @@ def load_model_at_best(root, gd):
     return likeli, theory_1h, theory_2h, theory_tot, stats
 
 
-
 def posterior_limits(roots, params=PARAMS, nsigma=3.0):
     """Union of mean +/- nsigma for all roots, clipped to hard prior bounds."""
     limits = {}
@@ -192,63 +269,195 @@ def posterior_limits(roots, params=PARAMS, nsigma=3.0):
     return limits
 
 
-def make_corner_plot(
-    roots,
-    out_path,
-    legend_labels=None,
-    title=None,
-    contour_colors=None,
-):
-    """Save one GetDist triangle plot for one or more chains."""
-    roots = list(roots)
-    g = gdplt.get_subplot_plotter(subplot_size=2.35)
-    g.settings.title_limit_fontsize = 12
-    g.triangle_plot(
-        roots,
-        PARAMS,
-        filled=True,
-        legend_labels=legend_labels,
-        contour_colors=contour_colors,
-        title_limit=1,
-        title_fmt=".2f",
-        param_limits=posterior_limits(roots),
-    )
-    if title:
-        g.fig.suptitle(title, y=1.02)
-    g.export(str(out_path))
-    plt.close(g.fig)
+def weighted_quantile(values, quantiles, weights):
+    """Weighted quantiles of MCMC samples."""
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    good = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
+    values, weights = values[good], weights[good]
+
+    order = np.argsort(values)
+    values, weights = values[order], weights[order]
+    cdf = (np.cumsum(weights) - 0.5 * weights) / np.sum(weights)
+    return np.interp(quantiles, cdf, values)
+
+
+def median_and_1sigma(gd, param):
+    """Weighted median with 16th/84th percentiles (+/- 1 sigma)."""
+    i = gd.paramNames.list().index(param)
+    q16, q50, q84 = weighted_quantile(gd.samples[:, i], [0.16, 0.50, 0.84], gd.weights)
+    return q16, q50, q84
+
+
+def posterior_summary(gd, param):
+    """Median +/- 1 sigma, or a one-sided limit if the posterior piles up at a prior edge.
+
+    The one-tail vs two-tail decision uses GetDist's 68% marginalized limits,
+    exactly as the original triangle_plot(title_limit=1) titles did.
+
+    Returns a dict with "kind" in {"twotail", "upper", "lower", "none"}.
+    """
+    stats = gd.getMargeStats().parWithName(param)
+    lim68 = stats.limits[0]
+    lim_quote = stats.limits[UPPER_LIMIT_LEVEL]
+
+    if lim68.onetail_upper:
+        return {"kind": "upper", "value": lim_quote.upper}
+    if lim68.onetail_lower:
+        return {"kind": "lower", "value": lim_quote.lower}
+    if lim68.twotail:
+        q16, q50, q84 = median_and_1sigma(gd, param)
+        return {"kind": "twotail", "q16": q16, "q50": q50, "q84": q84}
+    return {"kind": "none"}
+
+
+def summary_latex(summary):
+    """Right-hand side of the diagonal title, e.g. '= 1.30^{+0.38}_{-0.28}' or '< 5.75'."""
+    kind = summary["kind"]
+    if kind == "twotail":
+        q16, q50, q84 = summary["q16"], summary["q50"], summary["q84"]
+        return rf"= {q50:.2f}^{{+{q84 - q50:.2f}}}_{{-{q50 - q16:.2f}}}"
+    if kind == "upper":
+        return rf"< {summary['value']:.2f}"
+    if kind == "lower":
+        return rf"> {summary['value']:.2f}"
+    return r"\ {\rm unconstrained}"
+
+
+def summary_text(summary):
+    """Plain-text version for the terminal printout."""
+    kind = summary["kind"]
+    if kind == "twotail":
+        q16, q50, q84 = summary["q16"], summary["q50"], summary["q84"]
+        return f"{q50:.3g} +{q84 - q50:.3g} -{q50 - q16:.3g}"
+    if kind == "upper":
+        return f"< {summary['value']:.3g}"
+    if kind == "lower":
+        return f"> {summary['value']:.3g}"
+    return "unconstrained"
+
+
+def draw_one_corner(g, subfig, gd, color, limits, panel_title, margins):
+    """Draw one GetDist corner plot into a subfigure, with median +/- 1 sigma titles."""
+    axes = subfig.subplots(3, 3)
+    subfig.suptitle(panel_title, fontsize=CORNER_BLOCK_TITLE_FONTSIZE, y=CORNER_BLOCK_TITLE_Y)
+
+    for row in range(3):
+        for col in range(3):
+            ax = axes[row, col]
+            if col > row:
+                ax.set_visible(False)
+                continue
+
+            xparam = PARAMS[col]
+
+            if row == col:
+                g.plot_1d(gd, xparam, ax=ax, colors=[color], normalized=False)
+                summary = posterior_summary(gd, xparam)
+
+                if summary["kind"] == "twotail":
+                    # Median (dashed) and 16th-84th percentile band.
+                    ax.axvline(summary["q50"], color=color, lw=1.0, ls="--")
+                    ax.axvspan(summary["q16"], summary["q84"], color=color, alpha=0.12, lw=0)
+                elif summary["kind"] == "upper":
+                    # Shade from the prior edge up to the limit; dotted line at the limit.
+                    edge = gd.ranges.getLower(xparam)
+                    ax.axvspan(edge, summary["value"], color=color, alpha=0.12, lw=0)
+                    ax.axvline(summary["value"], color=color, lw=1.0, ls=":")
+                elif summary["kind"] == "lower":
+                    edge = gd.ranges.getUpper(xparam)
+                    ax.axvspan(summary["value"], edge, color=color, alpha=0.12, lw=0)
+                    ax.axvline(summary["value"], color=color, lw=1.0, ls=":")
+
+                ax.set_ylim(0.0, 1.08)
+                ax.set_yticks([])
+
+                label = PARAM_LABELS[col].strip("$")
+                ax.set_title(
+                    rf"${label} {summary_latex(summary)}$",
+                    fontsize=CORNER_VALUE_FONTSIZE,
+                )
+            else:
+                yparam = PARAMS[row]
+                g.plot_2d(
+                    gd, xparam, yparam, ax=ax,
+                    filled=True, colors=[color], add_legend_proxy=False,
+                )
+                ax.set_ylim(*limits[yparam])
+
+            ax.set_xlim(*limits[xparam])
+            ticksize(ax, CORNER_TICK_FONTSIZE)
+            ax.grid(False)
+
+            # Only the outer edges of each corner get labels.
+            ax.set_xlabel(PARAM_LABELS[col] if row == 2 else "", fontsize=CORNER_LABEL_FONTSIZE)
+            if row != 2:
+                ax.tick_params(labelbottom=False)
+            if col == 0 and row > 0:
+                ax.set_ylabel(PARAM_LABELS[row], fontsize=CORNER_LABEL_FONTSIZE)
+            else:
+                ax.set_ylabel("")
+                if row != col:
+                    ax.tick_params(labelleft=False)
+
+    subfig.subplots_adjust(**margins,
+                           wspace=CORNER_PANEL_WSPACE, hspace=CORNER_PANEL_HSPACE)
 
 
 def plot_corners(samples, out_dir, job_prefix):
-    """Write six individual corners plus three major/minor overlay corners."""
-    saved = []
+    """Combine all six GetDist corner plots into one 2x3 figure.
+
+    Top row: major axis. Bottom row: minor axis. Columns: stellar-mass bin.
+    Major and minor share axis limits within each mass bin so they can be
+    compared by eye.
+    """
+    out_path = out_dir / f"{job_prefix}_corners_2x3.pdf"
+
+    # GetDist's plotter needs make_figure() to initialize its internal state
+    # (line-width/font scaling etc.). We then draw into our own axes via ax=,
+    # so its placeholder figure is closed straight away. subplot_size is
+    # roughly the width of one corner cell in the final figure (inches).
+    g = gdplt.get_subplot_plotter(subplot_size=CORNER_GETDIST_SIZE)
+    g.make_figure(nplot=1)
+    plt.close(g.fig)
+
+    fig = plt.figure(figsize=CORNER_FIGSIZE)
+    # Give the two rows different heights so the panels themselves come out
+    # the same size, even though the rows reserve different title space.
+    row_margins = [CORNER_MARGINS_TOP_ROW, CORNER_MARGINS_BOTTOM_ROW]
+    height_ratios = [1.0 / (m["top"] - m["bottom"]) for m in row_margins]
+    subfigs = fig.subfigures(
+        2, 3, wspace=CORNER_BLOCK_WSPACE, hspace=CORNER_BLOCK_HSPACE,
+        height_ratios=height_ratios,
+    )
 
     for mass_bin in range(3):
-        for sector in SECTORS:
-            out_path = out_dir / f"{job_prefix}_corner_b{mass_bin}_{sector}.pdf"
-            make_corner_plot(
-                [samples[(mass_bin, sector)]],
-                out_path,
-                legend_labels=[sector.capitalize()],
-                title=f"{MASS_BIN_LABELS[mass_bin]}: {sector.capitalize()}",
-                contour_colors=[SECTOR_COLORS[sector]],
-            )
-            saved.append(out_path)
-
-        out_path = out_dir / f"{job_prefix}_corner_b{mass_bin}_major_minor.pdf"
-        make_corner_plot(
-            [samples[(mass_bin, "major")], samples[(mass_bin, "minor")]],
-            out_path,
-            legend_labels=["Major", "Minor"],
-            title=f"{MASS_BIN_LABELS[mass_bin]}: Major vs Minor",
-            contour_colors=[CAP_MAJOR_COLOR, CAP_MINOR_COLOR],
+        limits = posterior_limits(
+            [samples[(mass_bin, s)] for s in SECTORS]
         )
-        saved.append(out_path)
+        for row, sector in enumerate(SECTORS):
+            # The mass-bin label goes on the top row only.
+            if row == 0:
+                title = f"{MASS_BIN_LABELS[mass_bin]}\n{sector.capitalize()} axis"
+            else:
+                title = f"{sector.capitalize()} axis"
+            draw_one_corner(
+                g,
+                subfigs[row, mass_bin],
+                samples[(mass_bin, sector)],
+                SECTOR_COLORS[sector],
+                limits,
+                title,
+                row_margins[row],
+            )
 
-    return saved
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
+    plt.close(fig)
+    return out_path
+
 
 def plot_posteriors(samples, out_path):
-    fig, axes = plt.subplots(3, 3, figsize=(12, 9), sharey=False)
+    fig, axes = plt.subplots(3, 3, figsize=POSTERIOR_FIGSIZE, sharey=False)
 
     for col, mass_bin in enumerate(range(3)):
         for row, (param, plabel) in enumerate(zip(PARAMS, PARAM_LABELS)):
@@ -268,16 +477,18 @@ def plot_posteriors(samples, out_path):
                 )
 
             if row == 0:
-                ax.set_title(MASS_BIN_LABELS[mass_bin])
+                ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(POSTERIOR_TITLE_FONTSIZE))
             if col == 0:
-                ax.set_ylabel(f"{plabel}\nNormalized density")
-            ax.set_xlabel(plabel)
+                ax.set_ylabel(f"{plabel}\nNormalized density",
+                              **fontsize(POSTERIOR_LABEL_FONTSIZE))
+            ax.set_xlabel(plabel, **fontsize(POSTERIOR_LABEL_FONTSIZE))
+            ticksize(ax, POSTERIOR_TICK_FONTSIZE)
             ax.set_ylim(bottom=0)
             if row == 0 and col == 0:
-                ax.legend(frameon=False)
+                ax.legend(frameon=False, **fontsize(POSTERIOR_LEGEND_FONTSIZE))
 
-    fig.tight_layout()
-    fig.savefig(out_path, bbox_inches="tight")
+    fig.tight_layout(pad=POSTERIOR_PAD, w_pad=POSTERIOR_W_PAD, h_pad=POSTERIOR_H_PAD)
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
 
 
@@ -291,8 +502,8 @@ def plot_profiles(samples, roots, out_path):
     }
     set_plot_style("default")
 
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.2), sharey=True)
-    
+    fig, axes = plt.subplots(1, 3, figsize=PROFILE_FIGSIZE, sharey=True)
+
     all_stats = {}
 
     for mass_bin, ax in enumerate(axes):
@@ -319,8 +530,8 @@ def plot_profiles(samples, roots, out_path):
                 data * 1e6,
                 yerr=err * 1e6,
                 fmt="o",
-                ms=4.5,
-                capsize=2.5,
+                ms=PROFILE_MARKER_SIZE,
+                capsize=PROFILE_CAPSIZE,
                 color=color,
                 label=f"{sector.capitalize()} data",
             )
@@ -351,16 +562,16 @@ def plot_profiles(samples, roots, out_path):
             )
 
             stat_lines.append(
-                rf"{sector.capitalize()}: $\chi^2={stats['chi2']:.2f}$, "
-                rf"$\chi^2/N={stats['chi2_over_N']:.2f}$, "
-                rf"PTE$={stats['pte']:.3f}$"
+                rf"{sector.capitalize()}: $\chi^2={stats['chi2']:.2f}$"
             )
 
         ax.axhline(0.0, lw=0.8, ls="--", color="0.5")
-        ax.set_title(MASS_BIN_LABELS[mass_bin])
-        ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$")
+        ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(PROFILE_TITLE_FONTSIZE))
+        ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(PROFILE_LABEL_FONTSIZE))
         if mass_bin == 0:
-            ax.set_ylabel(r"$y_{\rm CAP}\ [10^{-6}\,{\rm arcmin}^2]$")
+            ax.set_ylabel(r"$y_{\rm CAP}\ [10^{-6}\,{\rm arcmin}^2]$",
+                          **fontsize(PROFILE_LABEL_FONTSIZE))
+        ticksize(ax, PROFILE_TICK_FONTSIZE)
 
         ax.text(
             0.03,
@@ -369,7 +580,7 @@ def plot_profiles(samples, roots, out_path):
             transform=ax.transAxes,
             va="top",
             ha="left",
-            fontsize=8.5,
+            fontsize=PROFILE_STATS_FONTSIZE,
             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, edgecolor="none"),
         )
 
@@ -395,16 +606,17 @@ def plot_profiles(samples, roots, out_path):
     fig.legend(
         handles=sector_handles + component_handles,
         loc="lower center",
-        bbox_to_anchor=(0.5, -0.015),
+        bbox_to_anchor=(0.5, PROFILE_LEGEND_Y),
         ncol=5,
         frameon=False,
-        fontsize=9.5,
+        fontsize=PROFILE_LEGEND_FONTSIZE,
         columnspacing=1.8,
         handlelength=2.4,
     )
 
-    fig.tight_layout(rect=(0.0, 0.08, 1.0, 1.0))
-    fig.savefig(out_path, bbox_inches="tight")
+    fig.tight_layout(rect=(0.0, PROFILE_LEGEND_SPACE, 1.0, 1.0),
+                     pad=PROFILE_PAD, w_pad=PROFILE_W_PAD)
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
 
     return all_stats
@@ -437,12 +649,22 @@ def main():
 
     plot_posteriors(samples, posterior_path)
     stats = plot_profiles(samples, roots, profile_path)
-    corner_paths = plot_corners(samples, out_dir, args.job_prefix)
+    corner_path = plot_corners(samples, out_dir, args.job_prefix)
 
     print(f"Saved {posterior_path}")
     print(f"Saved {profile_path}")
-    for path in corner_paths:
-        print(f"Saved {path}")
+    print(f"Saved {corner_path}")
+
+    level = ["68%", "95%"][UPPER_LIMIT_LEVEL]
+    print(f"\nPosterior summaries (median +/- 1 sigma; one-sided limits at {level}):")
+    for mass_bin in range(3):
+        for sector in SECTORS:
+            parts = []
+            for param in PARAMS:
+                summary = posterior_summary(samples[(mass_bin, sector)], param)
+                parts.append(f"{param} {summary_text(summary)}")
+            print(f"  bin {mass_bin} {sector:5s}: " + ", ".join(parts))
+
     print("\nMaximum-likelihood chain-sample goodness of fit:")
     for mass_bin in range(3):
         for sector in SECTORS:
