@@ -12,7 +12,8 @@ likelihood:
 
     Measurement:
       name: Wang2026
-      profile_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      profile_file:
+          /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
       mass_bin: 0
       sector: major
 
@@ -20,6 +21,9 @@ likelihood:
       name: Wang2026
       profile_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
       mass_bin: 0
+      
+      zNum: 10
+      logMhNum: 20
 
 shared:
   Cosmology:
@@ -78,8 +82,6 @@ params:
     ref: {dist: norm, loc: 1.0, scale: 1.0}
     proposal: 0.25
 
-  # Fixed shape parameters in Chad's active GNFW convention:
-  # P ~ (x/xc)^(-gamma) [1 + (x/xc)^alpha]^(-(beta-gamma)/alpha)
-  alpha_P: {value: 0.8, latex: "\\alpha_P"}
-  gamma_P: {value: 0.3, latex: "\\gamma_P"}
-  xc_P: {value: 0.497, latex: "x_{c,P}"}
+sampler:
+  mcmc:
+    Rminus1_stop: 0.001
