@@ -32,7 +32,7 @@ def parse_args():
         help="Base YAML name in CAPPIBARAS/yamls (without .yaml)",
     )
     p.add_argument("--job-prefix", default="Wang2026_gnfw")
-    p.add_argument("--threads-per-fit", type=int, default=3)
+    p.add_argument("--threads-per-fit", type=int, default=2)
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
