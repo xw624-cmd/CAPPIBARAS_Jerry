@@ -2,13 +2,12 @@
 """Make combined plots from all six independent CAPPIBARAS chains.
 
 The six GetDist corner plots are combined into one 2x3 figure (major on top,
-minor on bottom). Diagonal titles report marginalized posterior modes and 68% highest-posterior-
-density (HPD) regions. Independent minor-minus-major posterior differences
-are analyzed with Nick's KDE density-ordering significance convention.
+minor on bottom). Diagonal titles report posterior mode plus 68% HPD,
+or 95% one-sided limits for unconstrained distributions. Only P0
+minor-minus-major differences use Nick's unscaled KDE significance.
 """
 
 import argparse
-import csv
 from pathlib import Path
 
 import numpy as np
@@ -62,17 +61,20 @@ SAVE_PAD_INCHES = 0.02
 
 # ---- Posterior summaries and independent-chain differences -------------------
 HPD_MASS = 0.68  # 68% highest-posterior-density (not equal-tail) region
+CONTOUR_LEVELS = np.array([0.68, 0.95])  # Explicit 2D GetDist credible contours
+UPPER_LIMIT_MASS = 0.95   # Quote a 95% one-sided limit if 68% is unbounded
+CORNER_CONTOUR_PAD = 0.09 # Fractional margin around the 95% contour extent
 # Numerical KDE for differences. Smaller KDE fit sample keeps O(N^2) density
 # evaluation reasonably fast while preserving the code's sample-based statistic.
 DEFAULT_DIFFERENCE_DRAWS = 10000
 DEFAULT_KDE_FIT_DRAWS = 3000
 DEFAULT_RANDOM_SEED = 2026
-DIFFERENCE_FIGSIZE = (12, 9)
+DIFFERENCE_FIGSIZE = (15, 4.6)  # One P0 difference per mass bin
 
 # ---- Corner plots (2x3 figure) ----------------------------------------------
 CORNER_FIGSIZE = (18.0, 12.0)
-CORNER_BLOCK_WSPACE = 0.0     # gap between the three mass-bin columns
-CORNER_BLOCK_HSPACE = 0.0     # gap between the major row and the minor row
+CORNER_BLOCK_WSPACE = 0.02    # gap between mass-bin columns
+CORNER_BLOCK_HSPACE = 0.03    # gap between major/minor rows
 CORNER_PANEL_WSPACE = 0.0    # gap between panels inside one corner plot
 CORNER_PANEL_HSPACE = 0.0
 # White space inside each corner block (fractions of the block), which holds the
@@ -134,7 +136,7 @@ def parse_args():
     )
     p.add_argument(
         "--difference-draws", type=int, default=DEFAULT_DIFFERENCE_DRAWS,
-        help="Independent weighted minor/major posterior draws per parameter.",
+        help="Independent weighted P0 minor/major posterior draws.",
     )
     p.add_argument(
         "--kde-fit-draws", type=int, default=DEFAULT_KDE_FIT_DRAWS,
@@ -159,6 +161,8 @@ def load_getdist(root, ignore_rows):
     gd = cobaya.load_samples(str(root), to_getdist=True)
     if ignore_rows > 0:
         gd.removeBurnFraction(ignore_rows)
+    # Explicitly select 68% and 95% credible regions for all GetDist contours.
+    gd.contours = CONTOUR_LEVELS.copy()
     return gd
 
 
@@ -253,19 +257,6 @@ def load_model_at_best(root, gd):
     delta = data - theory_tot
     chi2 = float(delta @ inv_cov @ delta)
 
-    # Diagnostic only: quantifies the non-additivity caused by the native
-    # beam's log-interpolation. A discrepancy is NOT used in chi-square.
-    sigma = np.sqrt(np.diag(np.asarray(likeli.meas_cov.value, dtype=float)))
-    max_decomposition_residual_sigma = float(
-        np.max(np.abs(theory_tot - theory_1h - theory_2h) / sigma)
-    )
-    if max_decomposition_residual_sigma > 0.05:
-        print(
-            f"Note: {root}: 1h + 2h curves differ from the native total "
-            f"by up to {max_decomposition_residual_sigma:.3g} data-sigma "
-            "(beam interpolation is not exactly additive)."
-        )
-
     stats = {
         "chi2": chi2,
         "params": {name: params[name] for name in PARAMS},
@@ -274,28 +265,62 @@ def load_model_at_best(root, gd):
     return likeli, theory_1h, theory_2h, theory_tot, stats
 
 
-def posterior_limits(roots, params=PARAMS):
-    """Shared major/minor axis ranges from weighted posterior quantiles."""
+def posterior_limits(roots, cache, params=PARAMS):
+    """Zoom corner axes to the 95% *2D contour* extents.
+
+    Unlike extreme sample quantiles, this follows the displayed contours,
+    so long, nearly-empty tails do not squeeze the contour plots against
+    the prior boundary. The same limits apply to major/minor within each bin.
+    The 95% one-sided limit and 95% 1D HPD are included where relevant.
+    """
+    extents = {param: [] for param in params}
+    for key, gd in roots:
+        for param in params:
+            d1, summary = cache[(*key, param)]
+            for low, high in hpd_regions(d1.x, d1.P, mass=0.95):
+                extents[param].append((low, high))
+
+            # If reporting a one-sided limit, ensure its marker remains in view.
+            if summary["kind"] in ("upper", "lower"):
+                extents[param].append((summary["mode"], summary["limit"]))
+
+        for i, xparam in enumerate(params):
+            for yparam in params[i+1:]:
+                d2 = gd.get2DDensityGridData(
+                    xparam, yparam, num_plot_contours=2
+                )
+                if d2 is None:
+                    raise RuntimeError(f"GetDist could not calculate the {xparam}/{yparam} density")
+                # The second density threshold encloses 95% probability.
+                threshold95 = float(d2.contours[1])
+                density = np.asarray(d2.P)
+                mask = density >= threshold95
+                ys, xs = np.where(mask)
+                if xs.size == 0:
+                    raise RuntimeError(f"Empty 95% contour for {xparam}/{yparam}")
+                x = np.asarray(d2.x, dtype=float)
+                y = np.asarray(d2.y, dtype=float)
+                extents[xparam].append((float(x[xs.min()]), float(x[xs.max()])))
+                extents[yparam].append((float(y[ys.min()]), float(y[ys.max()])))
+
     limits = {}
     for param in params:
-        lows, highs = [], []
-        for gd in roots:
-            i = gd.paramNames.list().index(param)
-            lo, hi = weighted_quantile(
-                gd.samples[:, i], [0.00135, 0.99865], gd.weights
-            )
-            prior_lo = gd.ranges.getLower(param)
-            prior_hi = gd.ranges.getUpper(param)
-            if prior_lo is not None:
-                lo = max(float(lo), float(prior_lo))
-            if prior_hi is not None:
-                hi = min(float(hi), float(prior_hi))
-            lows.append(float(lo))
-            highs.append(float(hi))
-
-        lo, hi = min(lows), max(highs)
+        lo = min(pair[0] for pair in extents[param])
+        hi = max(pair[1] for pair in extents[param])
         if not np.isfinite([lo, hi]).all() or hi <= lo:
             raise ValueError(f"Invalid posterior range for {param}: {lo}, {hi}")
+        pad = CORNER_CONTOUR_PAD * (hi - lo)
+        lo, hi = lo - pad, hi + pad
+        prior_lows = [gd.ranges.getLower(param) for _, gd in roots]
+        prior_highs = [gd.ranges.getUpper(param) for _, gd in roots]
+        low_bounds = [x for x in prior_lows if x is not None]
+        high_bounds = [x for x in prior_highs if x is not None]
+        if low_bounds:
+            lo = max(lo, min(map(float, low_bounds)))
+        if high_bounds:
+            hi = min(hi, max(map(float, high_bounds)))
+        if lo >= hi:
+            raise ValueError(f"Invalid bounded posterior range for {param}: {lo}, {hi}")
         limits[param] = (lo, hi)
     return limits
 
@@ -386,34 +411,62 @@ def density_summary(x, density, mass=HPD_MASS):
     return {"mode": mode, "intervals": hpd_regions(x, density, mass)}
 
 
-def posterior_summary(gd, param):
-    """Use exactly the same GetDist 1D KDE as the plotted diagonal curve."""
-    density = gd.get1DDensity(param)
-    return density_summary(density.x, density.P)
+def posterior_summary(gd, param, density, marge_stats):
+    """Mode/HPD68 or a 95% one-sided limit, using the cached GetDist KDE."""
+    summary = density_summary(density.x, density.P)
+    lo_prior = gd.ranges.getLower(param)
+    hi_prior = gd.ranges.getUpper(param)
+    width = float(density.x[-1] - density.x[0])
+    atol = max(width / max(1, len(density.x) - 1) * 1.5, 1e-10)
+    hpd_lo = min(lower for lower, _ in summary["intervals"])
+    hpd_hi = max(upper for _, upper in summary["intervals"])
+    touches_lower = lo_prior is not None and hpd_lo <= float(lo_prior) + atol
+    touches_upper = hi_prior is not None and hpd_hi >= float(hi_prior) - atol
+
+    onetail68 = marge_stats.parWithName(param).limits[0]
+    upper = bool(onetail68.onetail_upper) or (touches_lower and not touches_upper)
+    lower = bool(onetail68.onetail_lower) or (touches_upper and not touches_lower)
+    if upper != lower:
+        index = gd.paramNames.list().index(param)
+        quantile = UPPER_LIMIT_MASS if upper else 1.0 - UPPER_LIMIT_MASS
+        val = weighted_quantile(gd.samples[:, index], [quantile], gd.weights)[0]
+        summary.update(kind="upper" if upper else "lower", limit=float(val))
+    else:
+        summary["kind"] = "twotail"
+    return summary
 
 
-def format_intervals(intervals, precision=3):
-    return " U ".join(
-        f"[{lo:.{precision}g}, {hi:.{precision}g}]"
-        for lo, hi in intervals
-    )
-
-
-def summary_latex(summary):
-    """Diagonal title: mode plus asymmetric 68% HPD errors if connected."""
+def summarize(summary, latex=False):
+    """One formatter for diagonal titles and terminal summaries."""
+    kind = summary.get("kind", "twotail")
     mode = summary["mode"]
+    if kind in ("upper", "lower"):
+        op = "<" if kind == "upper" else ">"
+        if latex:
+            return rf"{op} {summary['limit']:.2f}\ (95\%)"
+        return f"mode={mode:.5g}; {op} {summary['limit']:.5g} (95% {kind} limit)"
+
     intervals = summary["intervals"]
-    if len(intervals) == 1:
+    if latex:
+        if len(intervals) != 1:
+            return rf"= {mode:.2f}\ (\mathrm{{68\%\ HPD:multi}})"
         low, high = intervals[0]
         return rf"= {mode:.2f}^{{+{high - mode:.2f}}}_{{-{mode - low:.2f}}}"
-    # A multimodal HPD is a union; one error-bar pair would misrepresent it.
-    return rf"= {mode:.2f}\ (\mathrm{{68\%\ HPD:multi}})"
+    regions = " U ".join(f"[{lo:.5g}, {hi:.5g}]" for lo, hi in intervals)
+    return f"mode={mode:.5g}; HPD68={regions}"
 
 
-def summary_text(summary):
-    mode = summary["mode"]
-    intervals = summary["intervals"]
-    return f"mode={mode:.5g}; HPD68={format_intervals(intervals, 5)}"
+def prepare_posteriors(samples):
+    """Cache each 1D GetDist density and mode/interval summary exactly once."""
+    cache = {}
+    for (mass_bin, sector), gd in samples.items():
+        marge_stats = gd.getMargeStats()
+        for param in PARAMS:
+            density = gd.get1DDensity(param)
+            cache[(mass_bin, sector, param)] = (
+                density, posterior_summary(gd, param, density, marge_stats)
+            )
+    return cache
 
 
 def sample_parameter(gd, param, rng, size):
@@ -473,11 +526,9 @@ def difference_summary(major, minor, param, rng, draws, kde_fit_draws):
     y = np.asarray(kde(x), dtype=float)
     summary = density_summary(x, y)
     summary.update({
-        "draws": delta,
         "x": x,
         "density": y,
         "prob_minor_gt_major": p_positive,
-        "density_rank_mass": p,
         "sigma_signed": sigma_signed,
         "sigma_limited": limited,
     })
@@ -485,94 +536,48 @@ def difference_summary(major, minor, param, rng, draws, kde_fit_draws):
 
 
 def plot_differences(samples, out_path, rng, draws, kde_fit_draws):
-    """Nine minor-minus-major distributions (3 params x 3 mass bins)."""
-    fig, axes = plt.subplots(3, 3, figsize=DIFFERENCE_FIGSIZE)
+    """Only P0: minor-minus-major density and KDE significance in each bin.
+
+    The KDE is a genuine probability density (area integrates to one). It is
+    NOT peak-normalized.
+    """
+    param = "P0"
+    fig, axes = plt.subplots(1, 3, figsize=DIFFERENCE_FIGSIZE, sharey=False)
     all_results = {}
-    for mass_bin in range(3):
-        for row, (param, label) in enumerate(zip(PARAMS, PARAM_LABELS)):
-            result = difference_summary(
-                samples[(mass_bin, "major")], samples[(mass_bin, "minor")],
-                param, rng, draws, kde_fit_draws,
-            )
-            all_results[(mass_bin, param)] = result
-            ax = axes[row, mass_bin]
-            x, y = result["x"], result["density"]
-            if y.max() > 0:
-                y = y / y.max()
-            ax.plot(x, y, color=CAP_MINOR_COLOR, lw=1.7)
-            for lower, upper in result["intervals"]:
-                mask = (x >= lower) & (x <= upper)
-                ax.fill_between(x[mask], 0, y[mask], color=CAP_MINOR_COLOR, alpha=0.20)
-            ax.axvline(0.0, color="black", ls=":", lw=1.1)
-            ax.axvline(result["mode"], color=CAP_MINOR_COLOR, ls="--", lw=1.0)
-            if result["sigma_limited"]:
-                sigma_label = (
-                    rf"$|n_\sigma|\geq {abs(result['sigma_signed']):.2f}$"
-                )
-            else:
-                sigma_label = rf"$n_\sigma={result['sigma_signed']:+.2f}$"
-            ax.text(
-                0.97, 0.95,
-                sigma_label + "\n"
-                + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
-                ha="right", va="top", transform=ax.transAxes, fontsize=9,
-            )
-            ax.set_ylim(bottom=0)
-            ax.set_yticks([])
-            ax.set_xlabel(rf"$\Delta {label.strip('$')}$", fontsize=10)
-            if mass_bin == 0:
-                ax.set_ylabel("Density (peak normalized)", fontsize=9)
-            if row == 0:
-                ax.set_title(MASS_BIN_LABELS[mass_bin], fontsize=11)
+    for mass_bin, ax in enumerate(axes):
+        result = difference_summary(
+            samples[(mass_bin, "major")], samples[(mass_bin, "minor")],
+            param, rng, draws, kde_fit_draws,
+        )
+        all_results[mass_bin] = result
+        x, y = result["x"], result["density"]  # Never divide by y.max().
+        ax.plot(x, y, color=CAP_MINOR_COLOR, lw=1.7)
+        for lower, upper in result["intervals"]:
+            mask = (x >= lower) & (x <= upper)
+            ax.fill_between(x[mask], 0, y[mask], color=CAP_MINOR_COLOR, alpha=0.20)
+        ax.axvline(0.0, color="black", ls=":", lw=1.1)
+        ax.axvline(result["mode"], color=CAP_MINOR_COLOR, ls="--", lw=1.0)
+        if result["sigma_limited"]:
+            sigma_label = rf"$|n_\sigma|\geq {abs(result['sigma_signed']):.2f}$"
+        else:
+            sigma_label = rf"$n_\sigma={result['sigma_signed']:+.2f}$"
+        ax.text(
+            0.97, 0.95,
+            sigma_label + "\n"
+            + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
+            ha="right", va="top", transform=ax.transAxes, fontsize=9,
+        )
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel(r"$\Delta P_0 = P_{0,\mathrm{minor}} - P_{0,\mathrm{major}}$", fontsize=10)
+        ax.set_title(MASS_BIN_LABELS[mass_bin], fontsize=11)
+        ax.set_ylabel(r"Probability density", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
     return all_results
 
 
-def save_posterior_and_difference_tables(samples, differences, out_dir, job_prefix):
-    """Machine-readable modes/HPD and minor-major KDE significances."""
-    posterior_csv = out_dir / f"{job_prefix}_mode_HPD68.csv"
-    with posterior_csv.open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["mass_bin", "sector", "parameter", "mode", "HPD68_intervals",
-                         "HPD68_low_if_connected", "HPD68_high_if_connected"])
-        for bin_index in range(3):
-            for sector in SECTORS:
-                for param in PARAMS:
-                    summary = posterior_summary(samples[(bin_index, sector)], param)
-                    intervals = summary["intervals"]
-                    writer.writerow([
-                        bin_index, sector, param, summary["mode"],
-                        format_intervals(intervals, 8),
-                        intervals[0][0] if len(intervals) == 1 else "",
-                        intervals[0][1] if len(intervals) == 1 else "",
-                    ])
-    delta_csv = out_dir / f"{job_prefix}_minor_minus_major.csv"
-    with delta_csv.open("w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["mass_bin", "parameter", "delta_convention", "mode",
-                         "HPD68_intervals", "HPD68_low_if_connected",
-                         "HPD68_high_if_connected", "P_minor_gt_major",
-                         "KDE_density_rank_mass", "signed_gaussian_equivalent_sigma",
-                         "sigma_is_lower_limit"])
-        for bin_index in range(3):
-            for param in PARAMS:
-                summary = differences[(bin_index, param)]
-                intervals = summary["intervals"]
-                writer.writerow([
-                    bin_index, param, "minor-major", summary["mode"],
-                    format_intervals(intervals, 8),
-                    intervals[0][0] if len(intervals) == 1 else "",
-                    intervals[0][1] if len(intervals) == 1 else "",
-                    summary["prob_minor_gt_major"],
-                    summary["density_rank_mass"], summary["sigma_signed"],
-                    summary["sigma_limited"],
-                ])
-    return posterior_csv, delta_csv
-
-
-def draw_one_corner(g, subfig, gd, color, limits, panel_title, margins):
+def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margins):
     """Draw one GetDist corner plot with mode and 68% HPD annotations."""
     axes = subfig.subplots(3, 3)
     subfig.suptitle(panel_title, fontsize=CORNER_BLOCK_TITLE_FONTSIZE, y=CORNER_BLOCK_TITLE_Y)
@@ -588,11 +593,19 @@ def draw_one_corner(g, subfig, gd, color, limits, panel_title, margins):
 
             if row == col:
                 g.plot_1d(gd, xparam, ax=ax, colors=[color], normalized=False)
-                summary = posterior_summary(gd, xparam)
+                summary = cache[(*key, xparam)][1]
 
-                # HPD regions may be disjoint; shade every connected component.
-                for low, high in summary["intervals"]:
-                    ax.axvspan(low, high, color=color, alpha=0.12, lw=0)
+                if summary["kind"] in ("upper", "lower"):
+                    # One-sided 95% posterior limit with the hard prior bound.
+                    edge = gd.ranges.getLower(xparam) if summary["kind"] == "upper" \
+                        else gd.ranges.getUpper(xparam)
+                    if edge is not None:
+                        ax.axvspan(edge, summary["limit"], color=color, alpha=0.12, lw=0)
+                    ax.axvline(summary["limit"], color=color, lw=1.1, ls=":")
+                else:
+                    # 68% HPD regions may be disjoint.
+                    for low, high in summary["intervals"]:
+                        ax.axvspan(low, high, color=color, alpha=0.12, lw=0)
                 ax.axvline(summary["mode"], color=color, lw=1.0, ls="--")
 
                 ax.set_ylim(0.0, 1.08)
@@ -600,7 +613,7 @@ def draw_one_corner(g, subfig, gd, color, limits, panel_title, margins):
 
                 label = PARAM_LABELS[col].strip("$")
                 ax.set_title(
-                    rf"${label} {summary_latex(summary)}$",
+                    rf"${label} {summarize(summary, latex=True)}$",
                     fontsize=CORNER_VALUE_FONTSIZE,
                 )
             else:
@@ -630,7 +643,7 @@ def draw_one_corner(g, subfig, gd, color, limits, panel_title, margins):
                            wspace=CORNER_PANEL_WSPACE, hspace=CORNER_PANEL_HSPACE)
 
 
-def plot_corners(samples, out_dir, job_prefix):
+def plot_corners(samples, cache, out_dir, job_prefix):
     """Combine all six GetDist corner plots into one 2x3 figure.
 
     Top row: major axis. Bottom row: minor axis. Columns: stellar-mass bin.
@@ -639,17 +652,13 @@ def plot_corners(samples, out_dir, job_prefix):
     """
     out_path = out_dir / f"{job_prefix}_corners_2x3.pdf"
 
-    # GetDist's plotter needs make_figure() to initialize its internal state
-    # (line-width/font scaling etc.). We then draw into our own axes via ax=,
-    # so its placeholder figure is closed straight away. subplot_size is
-    # roughly the width of one corner cell in the final figure (inches).
+    # Initialize GetDist before drawing into our six Matplotlib subfigures.
     g = gdplt.get_subplot_plotter(subplot_size=CORNER_GETDIST_SIZE)
+    g.settings.num_plot_contours = 2
     g.make_figure(nplot=1)
     plt.close(g.fig)
 
     fig = plt.figure(figsize=CORNER_FIGSIZE)
-    # Give the two rows different heights so the panels themselves come out
-    # the same size, even though the rows reserve different title space.
     row_margins = [CORNER_MARGINS_TOP_ROW, CORNER_MARGINS_BOTTOM_ROW]
     height_ratios = [1.0 / (m["top"] - m["bottom"]) for m in row_margins]
     subfigs = fig.subfigures(
@@ -659,7 +668,7 @@ def plot_corners(samples, out_dir, job_prefix):
 
     for mass_bin in range(3):
         limits = posterior_limits(
-            [samples[(mass_bin, s)] for s in SECTORS]
+            [((mass_bin, s), samples[(mass_bin, s)]) for s in SECTORS], cache
         )
         for row, sector in enumerate(SECTORS):
             # The mass-bin label goes on the top row only.
@@ -671,6 +680,7 @@ def plot_corners(samples, out_dir, job_prefix):
                 g,
                 subfigs[row, mass_bin],
                 samples[(mass_bin, sector)],
+                (mass_bin, sector), cache,
                 SECTOR_COLORS[sector],
                 limits,
                 title,
@@ -682,15 +692,14 @@ def plot_corners(samples, out_dir, job_prefix):
     return out_path
 
 
-def plot_posteriors(samples, out_path):
+def plot_posteriors(cache, out_path):
     fig, axes = plt.subplots(3, 3, figsize=POSTERIOR_FIGSIZE, sharey=False)
 
     for col, mass_bin in enumerate(range(3)):
         for row, (param, plabel) in enumerate(zip(PARAMS, PARAM_LABELS)):
             ax = axes[row, col]
             for sector in SECTORS:
-                gd = samples[(mass_bin, sector)]
-                density = gd.get1DDensity(param)
+                density = cache[(mass_bin, sector, param)][0]
                 x = np.asarray(density.x)
                 y = np.asarray(density.P)
                 if np.max(y) > 0:
@@ -868,52 +877,47 @@ def main():
                 )
             samples[(mass_bin, sector)] = load_getdist(root, args.ignore_rows)
 
+    cache = prepare_posteriors(samples)
     posterior_path = out_dir / f"{args.job_prefix}_posteriors_3x3.pdf"
     profile_path = out_dir / f"{args.job_prefix}_profiles_1x3.pdf"
 
-    plot_posteriors(samples, posterior_path)
+    plot_posteriors(cache, posterior_path)
     stats = plot_profiles(samples, roots, profile_path)
-    corner_path = plot_corners(samples, out_dir, args.job_prefix)
+    corner_path = plot_corners(samples, cache, out_dir, args.job_prefix)
 
     print(f"Saved {posterior_path}")
     print(f"Saved {profile_path}")
     print(f"Saved {corner_path}")
 
-    difference_path = out_dir / f"{args.job_prefix}_minor_minus_major_3x3.pdf"
+    difference_path = out_dir / f"{args.job_prefix}_P0_minor_minus_major_1x3.pdf"
     differences = plot_differences(
         samples, difference_path, np.random.default_rng(args.seed),
         args.difference_draws, args.kde_fit_draws,
     )
-    posterior_csv, delta_csv = save_posterior_and_difference_tables(
-        samples, differences, out_dir, args.job_prefix,
-    )
     print(f"Saved {difference_path}")
-    print(f"Saved {posterior_csv}")
-    print(f"Saved {delta_csv}")
 
-    print("\nMarginalized posterior mode and 68% HPD regions:")
+    print("\nMarginalized posterior: mode + HPD68 or 95% one-sided limits:")
     for mass_bin in range(3):
         for sector in SECTORS:
             for param in PARAMS:
-                summary = posterior_summary(samples[(mass_bin, sector)], param)
-                print(f"  bin {mass_bin} {sector:5s} {param}: {summary_text(summary)}")
+                summary = cache[(mass_bin, sector, param)][1]
+                print(f"  bin {mass_bin} {sector:5s} {param}: {summarize(summary)}")
 
-    print("\nMinor-minus-major posteriors (independent-chain assumption):")
-    print("  n_sigma: Nick's density-ranking Gaussian equivalent; ")
-    print("  P(delta>0): fraction of paired posterior draws with minor > major.")
+    print("\nP0 minor-minus-major posteriors (independent-chain assumption):")
+    print("  n_sigma: Nick's density-ranking Gaussian equivalent")
+    print("  P(delta>0): fraction of paired posterior draws with minor > major")
     for mass_bin in range(3):
-        for param in PARAMS:
-            summary = differences[(mass_bin, param)]
-            sigma_text = (
-                f"|n_sigma| >= {abs(summary['sigma_signed']):.3f}"
-                if summary["sigma_limited"]
-                else f"n_sigma = {summary['sigma_signed']:+.3f}"
-            )
-            print(
-                f"  bin {mass_bin} {param}: {summary_text(summary)}; "
-                f"{sigma_text}; "
-                f"P(minor > major)={summary['prob_minor_gt_major']:.5f}"
-            )
+        summary = differences[mass_bin]
+        sigma_text = (
+            f"|n_sigma| >= {abs(summary['sigma_signed']):.3f}"
+            if summary["sigma_limited"]
+            else f"n_sigma = {summary['sigma_signed']:+.3f}"
+        )
+        print(
+            f"  bin {mass_bin} P0: {summarize(summary)}; "
+            f"{sigma_text}; "
+            f"P(minor > major)={summary['prob_minor_gt_major']:.5f}"
+        )
 
     print("\nBest-sampled-chain-point goodness of fit:")
     for mass_bin in range(3):
