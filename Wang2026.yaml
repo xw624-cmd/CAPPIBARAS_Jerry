@@ -1,10 +1,8 @@
 # Minimal CAPPIBARAS template for ONE of the six independent fits.
 # submit_Wang2026.py clones this template into bin0/1/2 x major/minor YAMLs.
 #
-# Prerequisites outside this file:
-#   1) Put Models/Papers/Wang2026.py in the CAPPIBARAS checkout.
-#   2) In Popik2026.Pressure1h.onehalo, enable the existing PL() lines for
-#      P0, xc_P, and beta_P (alpha_P/gamma_P have zero evolution here).
+# Install Models/Papers/Wang2026.py into this CAPPIBARAS checkout.
+# The bundled Popik2026.Pressure1h already has PL() evolution enabled.
 
 likelihood:
   Wang2026:
@@ -12,14 +10,13 @@ likelihood:
 
     Measurement:
       name: Wang2026
-      profile_file:
-          /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      profile_file: &paired_cap_npz /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
       mass_bin: 0
       sector: major
 
     TargetData:
       name: Wang2026
-      profile_file: /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      profile_file: *paired_cap_npz
       mass_bin: 0
       
       zNum: 10
@@ -63,23 +60,19 @@ shared:
     twohalofix: fixed
 
 params:
-  # Free parameters
   P0:
     latex: "P_0"
     prior: {min: 0.0, max: 60.0}
-    ref: {dist: norm, loc: 2.0, scale: 1.0}
     proposal: 0.25
 
   beta_P:
     latex: "\\beta_P"
     prior: {min: 0.0, max: 10.0}
-    ref: {dist: norm, loc: 2.6, scale: 0.8}
     proposal: 0.15
 
   A_2h_P:
     latex: "A_{2h,P}"
     prior: {min: 0.0, max: 60.0}
-    ref: {dist: norm, loc: 1.0, scale: 1.0}
     proposal: 0.25
 
 sampler:
