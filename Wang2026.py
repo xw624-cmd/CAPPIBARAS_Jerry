@@ -19,7 +19,12 @@ for this analysis. TargetData supplies dN/dz and dN/dlogM200c directly, so the
 ForwardModel SHMR fallback is not used.
 """
 
-from config import *
+from pathlib import Path
+
+import numpy as np
+import astropy.units as u
+
+from Models.OldModules.SHMRs import Kravtsov2018 as ChadKravtsov2018
 
 
 class Measurement:
@@ -92,14 +97,6 @@ class TargetData:
     fallback path.
     """
 
-    # Kravtsov2018.SHMR B13 parameters for scatter='S', mdef='200c'.
-    # These are the values already encoded in CAPPIBARAS's Kravtsov2018.py.
-    _K18_LOGM1 = 11.35
-    _K18_LOGEPS = -1.642
-    _K18_ALPHA = 1.779
-    _K18_DELTA = 4.394
-    _K18_GAMMA = 0.547
-
     def __init__(self, profile_file, mass_bin, **kwargs):
         self.profile_file = Path(profile_file).expanduser()
         self.mass_bin = int(mass_bin)
@@ -139,11 +136,21 @@ class TargetData:
         if self.cat_zs.size < 2:
             raise ValueError("Too few valid galaxies in TargetData")
 
-        # Match Chad's old BaseSHMR.HSMR implementation: tabulate the B13
-        # M*(Mh) relation on 10 <= log10(Mh/Msun) <= 20 and invert by
-        # interpolation. Here Mh is already M200c, so no mass-definition
-        # conversion is required afterward.
-        self.cat_logMh = self._stellar_to_halo_mass_200c(self.cat_logMs)
+        # Use Chad's native Kravtsov2018 B13 relation and BaseSHMR.HSMR
+        # inverse (10 <= logMh <= 20, 1000 grid samples).
+        # The model's mass definition is already M200c: do not reconvert it.
+        shmr = ChadKravtsov2018(model="B13", mdef="200c", scatter="S")
+
+        # Chad's HSMR() relies on np.interp, which silently clips inputs
+        # outside the tabulated domain. Retain our explicit range check.
+        logMs_bounds = np.asarray(shmr.SHMR(np.array([10.0, 20.0]))(), dtype=float)
+        if np.any(self.cat_logMs < logMs_bounds[0]) or np.any(self.cat_logMs > logMs_bounds[1]):
+            raise ValueError(
+                "Stellar mass lies outside the Kravtsov B13 inversion range "
+                f"[{logMs_bounds[0]:.3f}, {logMs_bounds[1]:.3f}] "
+                "in log10(M*/Msun)."
+            )
+        self.cat_logMh = np.asarray(shmr.HSMR(self.cat_logMs)(), dtype=float)
 
         good = np.isfinite(self.cat_logMh)
         if not np.all(good):
@@ -167,43 +174,6 @@ class TargetData:
         self.logMhMean = float(
             np.average(self.cat_logMh, weights=self.cat_weights)
         )
-
-    @classmethod
-    def _kravtsov_b13_logmstar(cls, logMh):
-        """Return log10(M*/Msun) from log10(M200c/Msun), matching Chad's B13 code."""
-        logMh = np.asarray(logMh, dtype=float)
-        alpha = -cls._K18_ALPHA  # Chad passes alpha=-p['alpha'] into Behroozi().
-        x = logMh - cls._K18_LOGM1
-
-        def f(xx):
-            return (
-                -np.log10(10.0 ** (alpha * xx) + 1.0)
-                + cls._K18_DELTA
-                * (np.log10(1.0 + np.exp(xx))) ** cls._K18_GAMMA
-                / (1.0 + np.exp(10.0 ** (-xx)))
-            )
-
-        return (
-            cls._K18_LOGEPS
-            + cls._K18_LOGM1
-            + f(x)
-            - f(0.0)
-        )
-
-    @classmethod
-    def _stellar_to_halo_mass_200c(cls, logMs):
-        """Invert the Kravtsov B13 S/200c relation by interpolation."""
-        logMs = np.asarray(logMs, dtype=float)
-        logMh_grid = np.linspace(10.0, 20.0, 1000)
-        logMs_grid = cls._kravtsov_b13_logmstar(logMh_grid)
-
-        if np.any(logMs < logMs_grid[0]) or np.any(logMs > logMs_grid[-1]):
-            raise ValueError(
-                "Stellar mass lies outside the tabulated Kravtsov B13 inversion "
-                f"range [{logMs_grid[0]:.3f}, {logMs_grid[-1]:.3f}] in log10(M*/Msun)."
-            )
-
-        return np.interp(logMs, logMs_grid, logMh_grid)
 
     @staticmethod
     def _edges(qmin, qmax, qnum=None, dq=None):
