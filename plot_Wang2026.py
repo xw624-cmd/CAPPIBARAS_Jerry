@@ -443,7 +443,7 @@ def summarize(summary, latex=False):
     if kind in ("upper", "lower"):
         op = "<" if kind == "upper" else ">"
         if latex:
-            return rf"{op} {summary['limit']:.2f}\ (95\%)"
+            return rf"{op} {summary['limit']:.2f}"
         return f"mode={mode:.5g}; {op} {summary['limit']:.5g} (95% {kind} limit)"
 
     intervals = summary["intervals"]
@@ -535,16 +535,18 @@ def difference_summary(major, minor, param, rng, draws, kde_fit_draws):
     return summary
 
 
-def plot_differences(samples, out_path, rng, draws, kde_fit_draws):
-    """Only P0: minor-minus-major density and KDE significance in each bin.
+def plot_differences(samples, out_path, seed, draws, kde_fit_draws):
+    """P0 minor-minus-major KDEs, with independent RNG per mass bin.
 
-    The KDE is a genuine probability density (area integrates to one). It is
-    NOT peak-normalized.
+    A separate reproducible random stream for each mass bin prevents adding
+    or removing calculations for OTHER bins or parameters from silently
+    changing this bin's estimated significance. Densities are area-normalized.
     """
     param = "P0"
     fig, axes = plt.subplots(1, 3, figsize=DIFFERENCE_FIGSIZE, sharey=False)
     all_results = {}
     for mass_bin, ax in enumerate(axes):
+        rng = np.random.default_rng([seed, mass_bin])
         result = difference_summary(
             samples[(mass_bin, "major")], samples[(mass_bin, "minor")],
             param, rng, draws, kde_fit_draws,
@@ -562,15 +564,15 @@ def plot_differences(samples, out_path, rng, draws, kde_fit_draws):
         else:
             sigma_label = rf"$n_\sigma={result['sigma_signed']:+.2f}$"
         ax.text(
-            0.97, 0.95,
+            0.03, 0.95,
             sigma_label + "\n"
             + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
-            ha="right", va="top", transform=ax.transAxes, fontsize=9,
+            ha="left", va="top", transform=ax.transAxes, fontsize=9,
         )
         ax.set_ylim(bottom=0)
-        ax.set_xlabel(r"$\Delta P_0 = P_{0,\mathrm{minor}} - P_{0,\mathrm{major}}$", fontsize=10)
+        ax.set_xlabel(r"$\Delta P_0$", fontsize=10)
         ax.set_title(MASS_BIN_LABELS[mass_bin], fontsize=11)
-        ax.set_ylabel(r"Probability density", fontsize=10)
+        ax.set_ylabel(r"Probability density" if mass_bin == 0 else "", fontsize=10)
     fig.tight_layout()
     fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
@@ -795,10 +797,9 @@ def plot_profiles(samples, roots, out_path):
             )
 
             stat_lines.append(
-                rf"{sector.capitalize()}: $\chi^2={stats['chi2']:.2f}$"
+                rf"$\chi^2_{{\rm {sector}}}={stats['chi2']:.2f}$"
             )
 
-        ax.axhline(0.0, lw=0.8, ls="--", color="0.5")
         ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(PROFILE_TITLE_FONTSIZE))
         ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(PROFILE_LABEL_FONTSIZE))
         if mass_bin == 0:
@@ -891,7 +892,7 @@ def main():
 
     difference_path = out_dir / f"{args.job_prefix}_P0_minor_minus_major_1x3.pdf"
     differences = plot_differences(
-        samples, difference_path, np.random.default_rng(args.seed),
+        samples, difference_path, args.seed,
         args.difference_draws, args.kde_fit_draws,
     )
     print(f"Saved {difference_path}")
