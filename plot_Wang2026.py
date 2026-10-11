@@ -564,15 +564,16 @@ def plot_differences(samples, out_path, seed, draws, kde_fit_draws):
         else:
             sigma_label = rf"$n_\sigma={result['sigma_signed']:+.2f}$"
         ax.text(
-            0.03, 0.95,
-            sigma_label + "\n"
-            + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
-            ha="left", va="top", transform=ax.transAxes, fontsize=9,
-        )
+    0.97, 0.95,
+    sigma_label + "\n"
+    + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
+    ha="right", va="top", transform=ax.transAxes, fontsize=9,
+)
         ax.set_ylim(bottom=0)
         ax.set_xlabel(r"$\Delta P_0$", fontsize=10)
         ax.set_title(MASS_BIN_LABELS[mass_bin], fontsize=11)
         ax.set_ylabel(r"Probability density" if mass_bin == 0 else "", fontsize=10)
+        ax.grid(False)
     fig.tight_layout()
     fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
@@ -806,6 +807,7 @@ def plot_profiles(samples, roots, out_path):
             ax.set_ylabel(r"$y_{\rm CAP}\ [10^{-6}\,{\rm arcmin}^2]$",
                           **fontsize(PROFILE_LABEL_FONTSIZE))
         ticksize(ax, PROFILE_TICK_FONTSIZE)
+        ax.grid(False)
 
         ax.text(
             0.03,
