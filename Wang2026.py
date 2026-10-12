@@ -1,22 +1,5 @@
 """
-CAPPIBARAS data/observable adapters for Jerry Wang's six oriented tSZ profiles.
-
-This module is intentionally narrow. It does NOT reimplement the GNFW pressure
-profile, two-halo term, projection, beam convolution, cosmology, or likelihood.
-Those remain in CAPPIBARAS/Popik2026/SOLikelihoods.
-
-Classes provided here:
-  Measurement : reads one of the six profiles/covariances from the stacking NPZ
-  TargetData  : exposes the matching galaxy z and Kravtsov-inferred M200c catalog
-  MapData     : reads the ACT DR6 ILC beam file used for the stack
-  CAP         : applies only the 1-arcmin-inner-cut ring-ring aperture operator
-
-Expected installation:
-    CAPPIBARAS-main/Models/Papers/Wang2026.py
-
-This module assumes SZObservable.average_prof uses ave_Mh rather than ave_hod
-for this analysis. TargetData supplies dN/dz and dN/dlogM200c directly, so the
-ForwardModel SHMR fallback is not used.
+CAPPIBARAS data/observable adapters for oriented tSZ profiles.
 """
 
 from pathlib import Path
@@ -29,9 +12,6 @@ from Models.OldModules.SHMRs import Kravtsov2018 as ChadKravtsov2018
 
 class Measurement:
     """One major- or minor-axis ring-ring CAP profile from the stacking NPZ.
-
-    The saved profile and covariance are used exactly as measured. No sector-to-
-    full-circle rescaling and no Hartlap correction are applied here.
     """
 
     def __init__(self, profile_file, mass_bin, sector, **kwargs):
@@ -89,12 +69,6 @@ class Measurement:
 
 class TargetData:
     """Galaxy sample underlying one paired major/minor mass-bin profile.
-
-    The NPZ stores aligned per-galaxy redshift, stellar mass, and stack-weight
-    arrays. Stellar masses are converted here to M200c using the Kravtsov et al.
-    (2018) B13 relation with the S, 200c parameter set. This means CAPPIBARAS can
-    consume dN/dlogMh directly and never needs to enter ForwardModel's SHMR
-    fallback path.
     """
 
     def __init__(self, profile_file, mass_bin, **kwargs):
@@ -136,20 +110,7 @@ class TargetData:
         if self.cat_zs.size < 2:
             raise ValueError("Too few valid galaxies in TargetData")
 
-        # Use Chad's native Kravtsov2018 B13 relation and BaseSHMR.HSMR
-        # inverse (10 <= logMh <= 20, 1000 grid samples).
-        # The model's mass definition is already M200c: do not reconvert it.
         shmr = ChadKravtsov2018(model="B13", mdef="200c", scatter="S")
-
-        # Chad's HSMR() relies on np.interp, which silently clips inputs
-        # outside the tabulated domain. Retain our explicit range check.
-        logMs_bounds = np.asarray(shmr.SHMR(np.array([10.0, 20.0]))(), dtype=float)
-        if np.any(self.cat_logMs < logMs_bounds[0]) or np.any(self.cat_logMs > logMs_bounds[1]):
-            raise ValueError(
-                "Stellar mass lies outside the Kravtsov B13 inversion range "
-                f"[{logMs_bounds[0]:.3f}, {logMs_bounds[1]:.3f}] "
-                "in log10(M*/Msun)."
-            )
         self.cat_logMh = np.asarray(shmr.HSMR(self.cat_logMs)(), dtype=float)
 
         good = np.isfinite(self.cat_logMh)
