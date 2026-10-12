@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """Make combined plots from all six independent CAPPIBARAS chains.
-
-The six GetDist corner plots are combined into one 2x3 figure (major on top,
-minor on bottom). Diagonal titles report posterior mode plus 68% HPD,
-or 95% one-sided limits for unconstrained distributions. Only P0
-minor-minus-major differences use Nick's unscaled KDE significance.
 """
 
 import argparse
 from pathlib import Path
-
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
@@ -18,7 +12,6 @@ import getdist.plots as gdplt
 from matplotlib.lines import Line2D
 from scipy.special import erfinv
 from scipy.stats import gaussian_kde
-
 from config import OUTPUT_PATH, set_plot_style
 from plot_chains import get_param_results
 
@@ -70,6 +63,7 @@ DEFAULT_DIFFERENCE_DRAWS = 10000
 DEFAULT_KDE_FIT_DRAWS = 3000
 DEFAULT_RANDOM_SEED = 2026
 DIFFERENCE_FIGSIZE = (15, 4.6)  # One P0 difference per mass bin
+DIFFERENCE_XLIMITS = [(-60, 60), (-5, 7.5), (-10, 20)]  # Per-bin P0 difference x-axis limits
 
 # ---- Corner plots (2x3 figure) ----------------------------------------------
 CORNER_FIGSIZE = (18.0, 12.0)
@@ -106,7 +100,7 @@ PROFILE_W_PAD = 0          # horizontal gap between the three panels
 PROFILE_LEGEND_SPACE = 0.08   # fraction of figure height reserved for the legend
 PROFILE_LEGEND_Y = -0.015     # vertical position of the legend (figure coords)
 PROFILE_LEGEND_FONTSIZE = 10
-PROFILE_STATS_FONTSIZE = 10  # chi^2 box
+PROFILE_STATS_FONTSIZE = 14  # chi^2 box
 PROFILE_TITLE_FONTSIZE = 11
 PROFILE_LABEL_FONTSIZE = 10
 PROFILE_TICK_FONTSIZE = None
@@ -147,8 +141,6 @@ def parse_args():
         help="Reproducible seed for posterior difference draws.",
     )
     args = p.parse_args()
-    if args.difference_draws < 1000 or args.kde_fit_draws < 100:
-        p.error("Need --difference-draws >= 1000 and --kde-fit-draws >= 100")
     return args
 
 
@@ -174,20 +166,12 @@ def best_chain_params(root, gd):
     quantity also selects the maximum-posterior point within the allowed region.
     """
     input_yaml = Path(str(root) + ".input.yaml")
-    if not input_yaml.exists():
-        raise FileNotFoundError(input_yaml)
 
     with open(input_yaml) as f:
         info = yaml.safe_load(f)
 
-    if gd.loglikes is None or len(gd.loglikes) != len(gd.samples):
-        raise RuntimeError(
-            f"GetDist sample {root} does not contain a usable log-likelihood column"
-        )
 
     finite = np.isfinite(gd.loglikes)
-    if not np.any(finite):
-        raise RuntimeError(f"No finite log-likelihood samples found in {root}")
 
     candidate_rows = np.flatnonzero(finite)
     best_row = int(candidate_rows[np.argmin(gd.loglikes[finite])])
@@ -198,8 +182,6 @@ def best_chain_params(root, gd):
     params = {}
     for name, spec in info["params"].items():
         if isinstance(spec, dict) and "prior" in spec:
-            if name not in col:
-                raise KeyError(f"Sampled parameter {name!r} not found in chain")
             params[name] = float(gd.samples[best_row, col[name]])
         elif isinstance(spec, dict) and "value" in spec:
             params[name] = spec["value"]
@@ -224,8 +206,6 @@ def load_model_at_best(root, gd):
     model = cobaya.get_model(model_info)
     likelihoods = model.likelihood
 
-    if len(likelihoods) != 1:
-        raise ValueError(f"Expected one likelihood in {root}; got {list(likelihoods)}")
 
     lname = next(iter(likelihoods))
     likeli = likelihoods[lname]
@@ -243,16 +223,6 @@ def load_model_at_best(root, gd):
     theory_tot = np.asarray(likeli.model(params).value, dtype=float)
     data = np.asarray(likeli.data.y, dtype=float)
     inv_cov = np.asarray(likeli.data.inv_cov, dtype=float)
-    if theory_tot.shape != data.shape:
-        raise ValueError(
-            f"Theory/data vector mismatch for {root}: "
-            f"{theory_tot.shape} versus {data.shape}"
-        )
-    if not all(np.all(np.isfinite(a)) for a in
-               (theory_1h, theory_2h, theory_tot, data)):
-        raise ValueError(f"Non-finite model or data values for {root}")
-    if theory_1h.shape != data.shape or theory_2h.shape != data.shape:
-        raise ValueError(f"Component/data vector mismatch for {root}")
 
     delta = data - theory_tot
     chi2 = float(delta @ inv_cov @ delta)
@@ -289,15 +259,11 @@ def posterior_limits(roots, cache, params=PARAMS):
                 d2 = gd.get2DDensityGridData(
                     xparam, yparam, num_plot_contours=2
                 )
-                if d2 is None:
-                    raise RuntimeError(f"GetDist could not calculate the {xparam}/{yparam} density")
                 # The second density threshold encloses 95% probability.
                 threshold95 = float(d2.contours[1])
                 density = np.asarray(d2.P)
                 mask = density >= threshold95
                 ys, xs = np.where(mask)
-                if xs.size == 0:
-                    raise RuntimeError(f"Empty 95% contour for {xparam}/{yparam}")
                 x = np.asarray(d2.x, dtype=float)
                 y = np.asarray(d2.y, dtype=float)
                 extents[xparam].append((float(x[xs.min()]), float(x[xs.max()])))
@@ -307,8 +273,6 @@ def posterior_limits(roots, cache, params=PARAMS):
     for param in params:
         lo = min(pair[0] for pair in extents[param])
         hi = max(pair[1] for pair in extents[param])
-        if not np.isfinite([lo, hi]).all() or hi <= lo:
-            raise ValueError(f"Invalid posterior range for {param}: {lo}, {hi}")
         pad = CORNER_CONTOUR_PAD * (hi - lo)
         lo, hi = lo - pad, hi + pad
         prior_lows = [gd.ranges.getLower(param) for _, gd in roots]
@@ -319,8 +283,6 @@ def posterior_limits(roots, cache, params=PARAMS):
             lo = max(lo, min(map(float, low_bounds)))
         if high_bounds:
             hi = min(hi, max(map(float, high_bounds)))
-        if lo >= hi:
-            raise ValueError(f"Invalid bounded posterior range for {param}: {lo}, {hi}")
         limits[param] = (lo, hi)
     return limits
 
@@ -347,15 +309,7 @@ def hpd_regions(x, density, mass=HPD_MASS):
     """
     x = np.asarray(x, dtype=float)
     y = np.maximum(np.asarray(density, dtype=float), 0.0)
-    if x.ndim != 1 or x.size != y.size or x.size < 3:
-        raise ValueError("HPD requires matching 1D density grids of >= 3 points")
-    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
-        raise ValueError("Nonfinite 1D density")
-    if not np.all(np.diff(x) > 0) or not (0 < mass < 1):
-        raise ValueError("HPD grid must increase and mass must be in (0,1)")
     area = float(np.trapezoid(y, x))
-    if area <= 0:
-        raise ValueError("Cannot compute HPD from zero-density curve")
     y = y / area
 
     def coverage(threshold):
@@ -405,8 +359,6 @@ def density_summary(x, density, mass=HPD_MASS):
     """1D marginalized mode and HPD region(s) from the plotted density."""
     x = np.asarray(x, dtype=float)
     density = np.asarray(density, dtype=float)
-    if not np.all(np.isfinite(density)):
-        raise ValueError("Nonfinite density")
     mode = float(x[np.argmax(density)])
     return {"mode": mode, "intervals": hpd_regions(x, density, mass)}
 
@@ -472,14 +424,10 @@ def prepare_posteriors(samples):
 def sample_parameter(gd, param, rng, size):
     """Draw from a GetDist weighted posterior; never ignore chain weights."""
     names = gd.paramNames.list()
-    if param not in names:
-        raise KeyError(f"Missing parameter {param} in chain")
     vals = np.asarray(gd.samples[:, names.index(param)], dtype=float)
     weights = np.asarray(gd.weights, dtype=float)
     good = np.isfinite(vals) & np.isfinite(weights) & (weights > 0)
     vals, weights = vals[good], weights[good]
-    if vals.size < 10:
-        raise ValueError(f"Insufficient valid samples for {param}")
     return rng.choice(vals, size=size, replace=True, p=weights / weights.sum())
 
 
@@ -557,7 +505,6 @@ def plot_differences(samples, out_path, seed, draws, kde_fit_draws):
         for lower, upper in result["intervals"]:
             mask = (x >= lower) & (x <= upper)
             ax.fill_between(x[mask], 0, y[mask], color=CAP_MINOR_COLOR, alpha=0.20)
-        ax.axvline(0.0, color="black", ls=":", lw=1.1)
         ax.axvline(result["mode"], color=CAP_MINOR_COLOR, ls="--", lw=1.0)
         if result["sigma_limited"]:
             sigma_label = rf"$|n_\sigma|\geq {abs(result['sigma_signed']):.2f}$"
@@ -570,6 +517,7 @@ def plot_differences(samples, out_path, seed, draws, kde_fit_draws):
     ha="right", va="top", transform=ax.transAxes, fontsize=9,
 )
         ax.set_ylim(bottom=0)
+        ax.set_xlim(*DIFFERENCE_XLIMITS[mass_bin])
         ax.set_xlabel(r"$\Delta P_0$", fontsize=10)
         ax.set_title(MASS_BIN_LABELS[mass_bin], fontsize=11)
         ax.set_ylabel(r"Probability density" if mass_bin == 0 else "", fontsize=10)
@@ -874,10 +822,6 @@ def main():
         for sector in SECTORS:
             root = chain_root(args.job_prefix, mass_bin, sector)
             roots[(mass_bin, sector)] = root
-            if not Path(str(root) + ".input.yaml").exists():
-                raise FileNotFoundError(
-                    f"Missing completed/started chain root {root}.input.yaml"
-                )
             samples[(mass_bin, sector)] = load_getdist(root, args.ignore_rows)
 
     cache = prepare_posteriors(samples)
@@ -885,54 +829,14 @@ def main():
     profile_path = out_dir / f"{args.job_prefix}_profiles_1x3.pdf"
 
     plot_posteriors(cache, posterior_path)
-    stats = plot_profiles(samples, roots, profile_path)
-    corner_path = plot_corners(samples, cache, out_dir, args.job_prefix)
-
-    print(f"Saved {posterior_path}")
-    print(f"Saved {profile_path}")
-    print(f"Saved {corner_path}")
+    plot_profiles(samples, roots, profile_path)
+    plot_corners(samples, cache, out_dir, args.job_prefix)
 
     difference_path = out_dir / f"{args.job_prefix}_P0_minor_minus_major_1x3.pdf"
-    differences = plot_differences(
+    plot_differences(
         samples, difference_path, args.seed,
         args.difference_draws, args.kde_fit_draws,
     )
-    print(f"Saved {difference_path}")
-
-    print("\nMarginalized posterior: mode + HPD68 or 95% one-sided limits:")
-    for mass_bin in range(3):
-        for sector in SECTORS:
-            for param in PARAMS:
-                summary = cache[(mass_bin, sector, param)][1]
-                print(f"  bin {mass_bin} {sector:5s} {param}: {summarize(summary)}")
-
-    print("\nP0 minor-minus-major posteriors (independent-chain assumption):")
-    print("  n_sigma: Nick's density-ranking Gaussian equivalent")
-    print("  P(delta>0): fraction of paired posterior draws with minor > major")
-    for mass_bin in range(3):
-        summary = differences[mass_bin]
-        sigma_text = (
-            f"|n_sigma| >= {abs(summary['sigma_signed']):.3f}"
-            if summary["sigma_limited"]
-            else f"n_sigma = {summary['sigma_signed']:+.3f}"
-        )
-        print(
-            f"  bin {mass_bin} P0: {summarize(summary)}; "
-            f"{sigma_text}; "
-            f"P(minor > major)={summary['prob_minor_gt_major']:.5f}"
-        )
-
-    print("\nBest-sampled-chain-point goodness of fit:")
-    for mass_bin in range(3):
-        for sector in SECTORS:
-            s = stats[(mass_bin, sector)]
-            p = s["params"]
-            print(
-                f"  {MASS_BIN_LABELS[mass_bin]} {sector:5s}: "
-                f"chi2={s['chi2']:.4f}; "
-                f"P0={p['P0']:.5g}, beta_P={p['beta_P']:.5g}, "
-                f"A_2h_P={p['A_2h_P']:.5g}"
-            )
 
 
 if __name__ == "__main__":
