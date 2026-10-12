@@ -51,7 +51,7 @@ class MapData(ACTDR6MapData):
 
 
 class CAP(PopikCAP):
-    def __init__(self, Rs, inner_radius_arcmin=1.0, N_RCAP=1000,
+    def __init__(self, Rs, inner_radius_arcmin=1.0, N_RCAP=10000,
                  f_ring=np.sqrt(2), **kwargs):
         Rs = u.Quantity(Rs, u.arcmin).to_value(u.arcmin)
         R0 = float(inner_radius_arcmin)
