@@ -1,8 +1,4 @@
-# Minimal CAPPIBARAS template for ONE of the six independent fits.
-# submit_Wang2026.py clones this template into bin0/1/2 x major/minor YAMLs.
-#
-# Install Models/Papers/Wang2026.py into this CAPPIBARAS checkout.
-# The bundled Popik2026.Pressure1h already has PL() evolution enabled.
+# CAPPIBARAS template
 
 likelihood:
   Wang2026:
@@ -50,7 +46,6 @@ shared:
   BeamConvolution:
     name: Popik2026
 
-  # Only the observable/filter differs from Popik2026 here.
   CAP:
     name: Wang2026
     inner_radius_arcmin: 1.0
