@@ -188,7 +188,7 @@ def posterior_limits(roots, cache, params=PARAMS):
     for key, gd in roots:
         for param in params:
             d1, summary = cache[(*key, param)]
-            for low, high in hpd_regions(d1.x, d1.P, mass=0.95):
+            for low, high in hpd_regions(d1.x, d1.P, mass=UPPER_LIMIT_MASS):
                 extents[param].append((low, high))
 
             if summary["kind"] in ("upper", "lower"):
@@ -368,14 +368,15 @@ def difference_summary(major, minor, param, rng, draws):
     density_at_samples = np.asarray(kde(delta), dtype=float)
 
     p = float(np.mean(density_at_samples > density_zero))
-    p_positive = float(np.mean(delta > 0))
+    # p_positive = float(np.mean(delta > 0))
 
     limited = p >= 1.0
-    p_for_inverse = min(p, 1.0 - 0.5 / draws)
-    sigma_abs = float(np.sqrt(2.0) * erfinv(p_for_inverse))
-
-    direction = 1 if p_positive > 0.5 else -1 if p_positive < 0.5 else 0
-    sigma_signed = direction * sigma_abs
+    # p_for_inverse = min(p, 1.0 - 0.5 / draws)
+    #sigma_abs = float(np.sqrt(2.0) * erfinv(p_for_inverse))
+    sigma_abs = float(np.sqrt(2.0) * erfinv(p))
+    
+    #direction = 1 if p_positive > 0.5 else -1 if p_positive < 0.5 else 0
+    sigma_signed =  sigma_abs #* direction 
 
     scale = float(np.std(delta, ddof=1))
     pad = max(0.15 * (float(delta.max()) - float(delta.min())), 2.5 * kde.factor * scale)
@@ -390,7 +391,7 @@ def difference_summary(major, minor, param, rng, draws):
     summary.update({
         "x": x,
         "density": y,
-        "prob_minor_gt_major": p_positive,
+        "prob_minor_gt_major": p, #p_positive,
         "sigma_signed": sigma_signed,
         "sigma_limited": limited,
     })
