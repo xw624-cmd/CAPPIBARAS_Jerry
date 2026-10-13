@@ -420,11 +420,10 @@ def plot_differences(samples, out_path, seed, draws):
         else:
             sigma_label = rf"$n_\sigma={result['sigma_signed']:+.2f}$"
         ax.text(
-    0.97, 0.95,
-    sigma_label + "\n"
-    + rf"$P(\Delta>0)={result['prob_minor_gt_major']:.3f}$",
-    ha="right", va="top", transform=ax.transAxes, fontsize=9,
-)
+            0.97, 0.95,
+            sigma_label,
+            ha="right", va="top", transform=ax.transAxes, fontsize=9,
+        )
         ax.set_ylim(bottom=0)
         ax.set_xlim(*DIFFERENCE_XLIMITS[mass_bin])
         ax.set_xlabel(r"$\Delta P_0$", fontsize=10)
