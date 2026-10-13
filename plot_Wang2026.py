@@ -358,7 +358,7 @@ def sample_parameter(gd, param, rng, size):
     vals, weights = vals[good], weights[good]
     return rng.choice(vals, size=size, replace=True, p=weights / weights.sum())
 
-def difference_summary(major, minor, param, rng, draws, kde_fit_draws):
+def difference_summary(major, minor, param, rng, draws):
 
     a = sample_parameter(minor, param, rng, draws)
     b = sample_parameter(major, param, rng, draws)
