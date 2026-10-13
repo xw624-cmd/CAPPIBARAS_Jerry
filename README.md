@@ -1,5 +1,5 @@
 # CAPPIBARAS_Jerry
-Files I added for CAPPIBARAS
+Files I added for CAPPIBARAS, Wang2026.py goes into Models/Papers, Wang2026.yaml goes into yamls, plot_Wang2026 and submit_Wang2026 goes into CAPPIBARAS-main.
 
 Additional changes I made to CAPPIBARAS original files:
 
