@@ -464,8 +464,8 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
 
                     for low, high in summary["intervals"]:
                         ax.axvspan(low, high, color=color, alpha=0.12, lw=0)
-                ax.axvline(summary["mode"], color=color, lw=1.0, ls="--")
-
+                if summary["kind"] == "twotail":
+                    ax.axvline(summary["mode"], color=color, lw=1.0, ls="--")
                 ax.set_ylim(0.0, 1.08)
                 ax.set_yticks([])
 
