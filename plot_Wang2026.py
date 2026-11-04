@@ -10,8 +10,6 @@ from scipy.special import erfinv
 from scipy.stats import gaussian_kde, chi2 as chi2_distribution
 from config import OUTPUT_PATH, set_plot_style
 from plot_chains import get_param_results
-
-
 PARAMS = ["P0", "beta_P", "A_2h_P"]
 PARAM_LABELS = [r"$P_0$", r"$\beta_P$", r"$A_{2h,P}$"]
 SECTORS = ["major", "minor"]
@@ -84,7 +82,7 @@ def ticksize(ax, size):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--job-prefix", default="Wang2026_gnfw")
+    p.add_argument("--job-prefix", default="Wang2026_gnfw_noradio")
     p.add_argument("--output-dir", default=None)
     p.add_argument(
         "--ignore-rows",
@@ -262,6 +260,30 @@ def hpd_regions(x, density, mass=HPD_MASS):
     return intervals
 
 
+def shortest_mode_interval(x, density, mass=HPD_MASS):
+    """Narrowest connected interval containing the global mode and `mass` probability.
+
+    This is NOT necessarily a highest-posterior-density (HPD) set when the
+    marginalized posterior is multimodal. It covers 68% in one interval.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.maximum(np.asarray(density, dtype=float), 0.0)
+    cdf = np.r_[0.0, np.cumsum(0.5 * (y[:-1] + y[1:]) * np.diff(x))]
+    cdf /= cdf[-1]
+    mode = float(x[np.argmax(y)])
+
+    # For each possible lower boundary, find the upper boundary at +68% mass.
+    feasible = (x <= mode) & (cdf <= 1.0 - mass)
+    lows = x[feasible]
+    highs = np.interp(cdf[feasible] + mass, cdf, x)
+    includes_mode = highs >= mode
+    lows, highs = lows[includes_mode], highs[includes_mode]
+    i = np.argmin(highs - lows)
+    return float(lows[i]), float(highs[i])
+
+
+
+
 def density_summary(x, density, mass=HPD_MASS):
     x = np.asarray(x, dtype=float)
     density = np.asarray(density, dtype=float)
@@ -289,7 +311,14 @@ def posterior_summary(gd, param, density, marge_stats):
         summary.update(kind="upper" if upper else "lower", limit=float(val))
     else:
         summary["kind"] = "twotail"
+    # For two-sided summaries, show a single contiguous 68% interval
+    # around the marginal mode. The standard (possibly split) HPD remains
+    # used above to identify prior-boundary contact.
+    if summary["kind"] == "twotail":
+        summary["intervals"] = [shortest_mode_interval(density.x, density.P)]
     return summary
+
+
 
 
 def summarize(summary, latex=False):
@@ -301,13 +330,10 @@ def summarize(summary, latex=False):
             return rf"{op} {summary['limit']:.2f}"
         return f"mode={mode:.5g}; {op} {summary['limit']:.5g} (95% {kind} limit)"
     intervals = summary["intervals"]
+    low, high = intervals[0]
     if latex:
-        if len(intervals) != 1:
-            return rf"= {mode:.2f}\ (\mathrm{{68\\\\%\ HPD:multi}})"
-        low, high = intervals[0]
         return rf"= {mode:.2f}^{{+{high - mode:.2f}}}_{{-{mode - low:.2f}}}"
-    regions = " U ".join(f"[{lo:.5g}, {hi:.5g}]" for lo, hi in intervals)
-    return f"mode={mode:.5g}; HPD68={regions}"
+    return f"mode={mode:.5g}; contiguous68=[{low:.5g}, {high:.5g}]"
 
 
 def prepare_posteriors(samples):
@@ -345,7 +371,7 @@ def difference_summary(major, minor, param, rng, draws):
     #sigma_abs = float(np.sqrt(2.0) * erfinv(p_for_inverse))
     sigma_abs = float(np.sqrt(2.0) * erfinv(p))
     #direction = 1 if p_positive > 0.5 else -1 if p_positive < 0.5 else 0
-    sigma_signed =  sigma_abs #* direction 
+    sigma_signed = np.sign(np.mean(delta > 0) - 0.5) * sigma_abs #* direction 
     scale = float(np.std(delta, ddof=1))
     pad = max(0.15 * (float(delta.max()) - float(delta.min())), 2.5 * kde.factor * scale)
     low, high = float(delta.min() - pad), float(delta.max() + pad)
@@ -424,6 +450,8 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
                         ax.axvspan(edge, summary["limit"], color=color, alpha=0.12, lw=0)
                     ax.axvline(summary["limit"], color=color, lw=1.1, ls=":")
                 else:
+                    # One shaded interval containing exactly 68% probability.
+                    # The interval is contiguous, not necessarily an HPD set.
                     for low, high in summary["intervals"]:
                         ax.axvspan(low, high, color=color, alpha=0.12, lw=0)
                 if summary["kind"] == "twotail":
@@ -646,8 +674,6 @@ def print_fit_statistics_table(all_stats):
     for row in rows:
         print(format_row(row))
     print("Gaussian PTE = Pr[chi^2(df=4) >= observed chi^2]\n")
-
-
 
 
 def plot_residuals(models, out_path):
