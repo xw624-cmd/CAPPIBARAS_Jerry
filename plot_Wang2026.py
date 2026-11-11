@@ -6,6 +6,7 @@ import yaml
 import cobaya
 import getdist.plots as gdplt
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
 from scipy.special import erfinv
 from scipy.stats import gaussian_kde, chi2 as chi2_distribution
 from config import OUTPUT_PATH, set_plot_style
@@ -14,10 +15,9 @@ PARAMS = ["P0", "beta_P", "A_2h_P"]
 PARAM_LABELS = [r"$P_0$", r"$\beta_P$", r"$A_{2h,P}$"]
 SECTORS = ["major", "minor"]
 
-
+# Only these are shown in the corners; A_2h_P is still fitted and marginalized over.
 CORNER_PARAMS = ["P0", "beta_P"]
 CORNER_LABELS = [r"$P_0$", r"$\beta_P$"]
-PROFILE_LEGEND_LOC = "upper left"
 
 CAP_MAJOR_COLOR = "#771704"
 CAP_MINOR_COLOR = "#5b7fa6"
@@ -43,19 +43,35 @@ DEFAULT_DIFFERENCE_DRAWS = 10000
 DEFAULT_RANDOM_SEED = 2026
 DIFFERENCE_FIGSIZE = (15, 4.6)
 DIFFERENCE_XLIMITS = [(-60, 60), (-5, 7.5), (-10, 20)]
-CORNER_FIGSIZE = (13.0, 8.5)
-CORNER_BLOCK_WSPACE = 0.02
-CORNER_BLOCK_HSPACE = 0.03
-CORNER_PANEL_WSPACE = 0.0
-CORNER_PANEL_HSPACE = 0.0
-CORNER_MARGINS_TOP_ROW = dict(left=0.085, right=0.995, bottom=0.07, top=0.90)
-CORNER_MARGINS_BOTTOM_ROW = dict(left=0.085, right=0.995, bottom=0.07, top=0.925)
+
+# ---- Combined corner + profile figure layout (all lengths in inches) ----
+CELL = 1.55                    # side length of one corner panel
+LEFT_MARGIN = 1.05             # room for row labels, y tick labels, y label
+RIGHT_MARGIN = 0.15
+BOTTOM_MARGIN = 0.60           # room for bottom x tick labels and x labels
+TOP_MARGIN = 0.55              # room for the mass-bin titles
+COL_GAP = 0.85                 # gap between mass-bin columns
+ROW_GAP = 0.65                 # gap between top of minor block (its profile) and bottom of major corner
+PROFILE_PAD_LEFT = 0.85        # profile left edge, measured from the empty cell's left edge
+PROFILE_PAD_BOTTOM = 0.75      # profile bottom edge, measured from the empty cell's bottom edge
+PROFILE_W = 2.05               # profile panel width
+PROFILE_H = 1.75               # profile panel height
+PROFILE_SHARE_Y = True         # same y-range for major and minor profiles within a mass bin
+PROFILE_SHOW_LEGEND = False     # legend in the first column's profile of each row
+ROW_LABEL_X = 0.45             # x position of the "Major axis"/"Minor axis" row labels
 CORNER_GETDIST_SIZE = 1.7
-CORNER_BLOCK_TITLE_FONTSIZE = 13
-CORNER_VALUE_FONTSIZE = 11
+MASS_BIN_TITLE_FONTSIZE = 13
+ROW_LABEL_FONTSIZE = 13
+CORNER_VALUE_FONTSIZE = 10
 CORNER_LABEL_FONTSIZE = 11
 CORNER_TICK_FONTSIZE = 9
-CORNER_BLOCK_TITLE_Y = 1.0
+CORNER_XBINS = 6
+COMBINED_PROFILE_LABEL_FONTSIZE = 9
+COMBINED_PROFILE_TICK_FONTSIZE = 8
+COMBINED_PROFILE_LEGEND_FONTSIZE = 9
+COMBINED_PROFILE_MARKER_SIZE = 3.5
+COMBINED_PROFILE_CAPSIZE = 2.0
+
 POSTERIOR_FIGSIZE = (12, 9)
 POSTERIOR_PAD = 0.2
 POSTERIOR_W_PAD = 0.4
@@ -64,17 +80,19 @@ POSTERIOR_TITLE_FONTSIZE = None
 POSTERIOR_LABEL_FONTSIZE = None
 POSTERIOR_TICK_FONTSIZE = None
 POSTERIOR_LEGEND_FONTSIZE = None
-PROFILE_FIGSIZE = (16.5, 5.2)
-PROFILE_PAD = 0.2
-PROFILE_W_PAD = 0
-PROFILE_LEGEND_SPACE = 0.08
-PROFILE_LEGEND_Y = -0.015
-PROFILE_LEGEND_FONTSIZE = 13
-PROFILE_TITLE_FONTSIZE = 11
-PROFILE_LABEL_FONTSIZE = 10
-PROFILE_TICK_FONTSIZE = None
-PROFILE_MARKER_SIZE = 4.5
-PROFILE_CAPSIZE = 2.5
+
+# Residual figure
+RESIDUAL_FIGSIZE = (16.5, 5.2)
+RESIDUAL_PAD = 0.2
+RESIDUAL_W_PAD = 0
+RESIDUAL_LEGEND_SPACE = 0.08
+RESIDUAL_LEGEND_Y = -0.015
+RESIDUAL_LEGEND_FONTSIZE = 10
+RESIDUAL_TITLE_FONTSIZE = 11
+RESIDUAL_LABEL_FONTSIZE = 10
+RESIDUAL_TICK_FONTSIZE = None
+RESIDUAL_MARKER_SIZE = 4.5
+RESIDUAL_CAPSIZE = 2.5
 
 
 def fontsize(size):
@@ -84,6 +102,25 @@ def fontsize(size):
 def ticksize(ax, size):
     if size is not None:
         ax.tick_params(labelsize=size)
+
+
+def force_light_style():
+    """White background and black text/axes for every figure, regardless of style defaults."""
+    plt.rcParams.update({
+        "figure.facecolor": "white",
+        "figure.edgecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+        "savefig.edgecolor": "white",
+        "savefig.transparent": False,
+        "text.color": "black",
+        "axes.labelcolor": "black",
+        "axes.edgecolor": "black",
+        "xtick.color": "black",
+        "ytick.color": "black",
+        "legend.facecolor": "white",
+        "legend.edgecolor": "0.8",
+    })
 
 
 def parse_args():
@@ -176,6 +213,7 @@ def load_model_at_best(root, gd):
         "params": {name: params[name] for name in PARAMS},
     }
     return likeli, theory_tot, stats
+
 
 def posterior_limits(roots, cache, params=PARAMS):
     extents = {param: [] for param in params}
@@ -296,8 +334,6 @@ def shortest_mode_interval(x, density, mass=HPD_MASS):
     return float(lows[i]), float(highs[i])
 
 
-
-
 def density_summary(x, density, mass=HPD_MASS):
     x = np.asarray(x, dtype=float)
     density = np.asarray(density, dtype=float)
@@ -331,8 +367,6 @@ def posterior_summary(gd, param, density, marge_stats):
     if summary["kind"] == "twotail":
         summary["intervals"] = [shortest_mode_interval(density.x, density.P)]
     return summary
-
-
 
 
 def summarize(summary, latex=False):
@@ -379,13 +413,9 @@ def difference_summary(major, minor, param, rng, draws):
     density_zero = float(kde([0.0])[0])
     density_at_samples = np.asarray(kde(delta), dtype=float)
     p = float(np.mean(density_at_samples > density_zero))
-    # p_positive = float(np.mean(delta > 0))
     limited = p >= 1.0
-    # p_for_inverse = min(p, 1.0 - 0.5 / draws)
-    #sigma_abs = float(np.sqrt(2.0) * erfinv(p_for_inverse))
     sigma_abs = float(np.sqrt(2.0) * erfinv(p))
-    #direction = 1 if p_positive > 0.5 else -1 if p_positive < 0.5 else 0
-    sigma_signed = np.sign(np.mean(delta > 0) - 0.5) * sigma_abs #* direction 
+    sigma_signed = np.sign(np.mean(delta > 0) - 0.5) * sigma_abs
     scale = float(np.std(delta, ddof=1))
     pad = max(0.15 * (float(delta.max()) - float(delta.min())), 2.5 * kde.factor * scale)
     low, high = float(delta.min() - pad), float(delta.max() + pad)
@@ -399,7 +429,7 @@ def difference_summary(major, minor, param, rng, draws):
     summary.update({
         "x": x,
         "density": y,
-        "prob_minor_gt_major": p, #p_positive,
+        "prob_minor_gt_major": p,
         "sigma_signed": sigma_signed,
         "sigma_limited": limited,
     })
@@ -444,16 +474,40 @@ def plot_differences(samples, out_path, seed, draws):
     return all_results
 
 
-def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margins):
+# ---------------------------------------------------------------------------
+# Combined corner + profile figure
+# ---------------------------------------------------------------------------
+
+def combined_layout():
+    """Return figure size, block width, and corner origins (bottom-left, inches)."""
     n = len(CORNER_PARAMS)
-    axes = subfig.subplots(n, n)
-    subfig.suptitle(panel_title, fontsize=CORNER_BLOCK_TITLE_FONTSIZE, y=CORNER_BLOCK_TITLE_Y)
+    corner_h = n * CELL
+    block_w = max(n * CELL, (n - 1) * CELL + PROFILE_PAD_LEFT + PROFILE_W)
+    # Each row's block height includes the profile sticking out above its corner.
+    block_h = max(corner_h, (n - 1) * CELL + PROFILE_PAD_BOTTOM + PROFILE_H)
+    fig_w = LEFT_MARGIN + 3 * block_w + 2 * COL_GAP + RIGHT_MARGIN
+    fig_h = BOTTOM_MARGIN + 2 * block_h + ROW_GAP + TOP_MARGIN
+    y_minor = BOTTOM_MARGIN
+    y_major = BOTTOM_MARGIN + block_h + ROW_GAP
+    origins = {}
+    for mass_bin in range(3):
+        x0 = LEFT_MARGIN + mass_bin * (block_w + COL_GAP)
+        origins[(mass_bin, "major")] = (x0, y_major)
+        origins[(mass_bin, "minor")] = (x0, y_minor)
+    return fig_w, fig_h, block_w, origins
+
+
+def add_axes_inches(fig, fig_w, fig_h, left, bottom, width, height):
+    return fig.add_axes([left / fig_w, bottom / fig_h, width / fig_w, height / fig_h])
+
+
+def draw_corner(fig, fig_w, fig_h, g, gd, key, cache, color, limits, x0, y0):
+    n = len(CORNER_PARAMS)
     for row in range(n):
-        for col in range(n):
-            ax = axes[row, col]
-            if col > row:
-                ax.set_visible(False)
-                continue
+        for col in range(row + 1):
+            left = x0 + col * CELL
+            bottom = y0 + (n - 1 - row) * CELL
+            ax = add_axes_inches(fig, fig_w, fig_h, left, bottom, CELL, CELL)
             xparam = CORNER_PARAMS[col]
             if row == col:
                 g.plot_1d(gd, xparam, ax=ax, colors=[color], normalized=False)
@@ -486,6 +540,10 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
                 )
                 ax.set_ylim(*limits[yparam])
             ax.set_xlim(*limits[xparam])
+            # Drop the last x tick label on inner columns so it doesn't
+            # collide with the first label of the next column.
+            if col < n - 1:
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=CORNER_XBINS, prune="upper"))
             ticksize(ax, CORNER_TICK_FONTSIZE)
             ax.grid(False)
             ax.set_xlabel(CORNER_LABELS[col] if row == n - 1 else "",
@@ -498,43 +556,109 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
                 ax.set_ylabel("")
                 if row != col:
                     ax.tick_params(labelleft=False)
-    subfig.subplots_adjust(**margins,
-                           wspace=CORNER_PANEL_WSPACE, hspace=CORNER_PANEL_HSPACE)
 
-def plot_corners(samples, cache, out_dir, job_prefix):
-    out_path = out_dir / f"{job_prefix}_corners_2x3.pdf"
+
+def draw_profile(ax, models, mass_bin, sector, show_legend):
+    """Data and best-fit total model for a single sector."""
+    likeli, theory_tot, _ = models[(mass_bin, sector)]
+    R = np.asarray(likeli.R.to_value("arcmin"), dtype=float)
+    data = np.asarray(likeli.meas_data.value, dtype=float)
+    cov = np.asarray(likeli.meas_cov.value, dtype=float)
+    err = np.sqrt(np.diag(cov))
+    color = SECTOR_COLORS[sector]
+    handle = ax.errorbar(
+        R,
+        data * 1e6,
+        yerr=err * 1e6,
+        fmt="o",
+        ms=COMBINED_PROFILE_MARKER_SIZE,
+        capsize=COMBINED_PROFILE_CAPSIZE,
+        color=color,
+        label=f"{sector.capitalize()}-axis",
+    )
+    ax.plot(R, theory_tot * 1e6, color=color, lw=1.6, ls="-")
+    ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", fontsize=COMBINED_PROFILE_LABEL_FONTSIZE)
+    ax.set_ylabel(r"$y_{\rm CAP}\ [10^{-6}\,{\rm arcmin}^2]$",
+                  fontsize=COMBINED_PROFILE_LABEL_FONTSIZE)
+    ticksize(ax, COMBINED_PROFILE_TICK_FONTSIZE)
+    ax.grid(False)
+    if show_legend:
+        ax.legend(
+            handles=[handle],
+            loc="upper left",
+            frameon=True,
+            fancybox=True,
+            edgecolor="0.8",
+            fontsize=COMBINED_PROFILE_LEGEND_FONTSIZE,
+        )
+
+
+def plot_combined(samples, cache, models, out_path):
     g = gdplt.get_subplot_plotter(subplot_size=CORNER_GETDIST_SIZE)
     g.settings.num_plot_contours = 2
     g.make_figure(nplot=1)
     plt.close(g.fig)
-    fig = plt.figure(figsize=CORNER_FIGSIZE)
-    row_margins = [CORNER_MARGINS_TOP_ROW, CORNER_MARGINS_BOTTOM_ROW]
-    height_ratios = [1.0 / (m["top"] - m["bottom"]) for m in row_margins]
-    subfigs = fig.subfigures(
-        2, 3, wspace=CORNER_BLOCK_WSPACE, hspace=CORNER_BLOCK_HSPACE,
-        height_ratios=height_ratios,
-    )
+
+    fig_w, fig_h, block_w, origins = combined_layout()
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+    n = len(CORNER_PARAMS)
+
     for mass_bin in range(3):
         limits = posterior_limits(
             [((mass_bin, s), samples[(mass_bin, s)]) for s in SECTORS],
             cache, params=CORNER_PARAMS,
         )
-        for row, sector in enumerate(SECTORS):
-            if row == 0:
-                title = f"{MASS_BIN_LABELS[mass_bin]}\n{sector.capitalize()} axis"
-            else:
-                title = f"{sector.capitalize()} axis"
-            draw_one_corner(
-                g,
-                subfigs[row, mass_bin],
+        profile_axes = []
+        for sector in SECTORS:
+            x0, y0 = origins[(mass_bin, sector)]
+            draw_corner(
+                fig, fig_w, fig_h, g,
                 samples[(mass_bin, sector)],
                 (mass_bin, sector), cache,
                 SECTOR_COLORS[sector],
-                limits,
-                title,
-                row_margins[row],
+                limits, x0, y0,
             )
-    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
+            # Profile: up and to the right of this corner's empty cell.
+            prof_ax = add_axes_inches(
+                fig, fig_w, fig_h,
+                x0 + (n - 1) * CELL + PROFILE_PAD_LEFT,
+                y0 + (n - 1) * CELL + PROFILE_PAD_BOTTOM,
+                PROFILE_W, PROFILE_H,
+            )
+            draw_profile(
+                prof_ax, models, mass_bin, sector,
+                show_legend=PROFILE_SHOW_LEGEND and mass_bin == 0,
+            )
+            profile_axes.append(prof_ax)
+
+        if PROFILE_SHARE_Y:
+            lo = min(ax.get_ylim()[0] for ax in profile_axes)
+            hi = max(ax.get_ylim()[1] for ax in profile_axes)
+            for ax in profile_axes:
+                ax.set_ylim(lo, hi)
+
+        # Mass-bin title centered over the whole column.
+        x0, _ = origins[(mass_bin, "major")]
+        fig.text(
+            (x0 + block_w / 2) / fig_w,
+            (fig_h - TOP_MARGIN / 2) / fig_h,
+            MASS_BIN_LABELS[mass_bin],
+            ha="center", va="center", fontsize=MASS_BIN_TITLE_FONTSIZE,
+        )
+
+    # Row labels on the far left, centered on each corner.
+    for sector in SECTORS:
+        _, y0 = origins[(0, sector)]
+        fig.text(
+            ROW_LABEL_X / fig_w,
+            (y0 + n * CELL / 2) / fig_h,
+            f"{sector.capitalize()} axis",
+            rotation=90, ha="center", va="center",
+            fontsize=ROW_LABEL_FONTSIZE,
+        )
+
+    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES,
+                facecolor="white", transparent=False)
     plt.close(fig)
     return out_path
 
@@ -571,65 +695,6 @@ def plot_posteriors(cache, out_path):
     plt.close(fig)
 
 
-def plot_profiles(samples, roots, out_path, residual_path=None):
-    models = {
-        key: load_model_at_best(roots[key], samples[key])
-        for key in roots
-    }
-    set_plot_style("default")
-    fig, axes = plt.subplots(1, 3, figsize=PROFILE_FIGSIZE, sharey=True)
-    all_stats = {}
-    legend_handles = {}
-    for mass_bin, ax in enumerate(axes):
-        for sector in SECTORS:
-            likeli, theory_tot, stats = models[(mass_bin, sector)]
-            all_stats[(mass_bin, sector)] = stats
-            R = np.asarray(likeli.R.to_value("arcmin"), dtype=float)
-            data = np.asarray(likeli.meas_data.value, dtype=float)
-            cov = np.asarray(likeli.meas_cov.value, dtype=float)
-            err = np.sqrt(np.diag(cov))
-            color = SECTOR_COLORS[sector]
-            handle = ax.errorbar(
-                R + POINT_X_OFFSETS[sector],
-                data * 1e6,
-                yerr=err * 1e6,
-                fmt="o",
-                ms=PROFILE_MARKER_SIZE,
-                capsize=PROFILE_CAPSIZE,
-                color=color,
-                label=f"{sector.capitalize()}-axis",
-            )
-            if mass_bin == 0:
-                legend_handles[sector] = handle
-            ax.plot(R, theory_tot * 1e6, color=color, lw=2.0, ls="-")
-        ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(PROFILE_TITLE_FONTSIZE))
-        ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(PROFILE_LABEL_FONTSIZE))
-        if mass_bin == 0:
-            ax.set_ylabel(r"$y_{\rm CAP}\ [10^{-6}\,{\rm arcmin}^2]$",
-                          **fontsize(PROFILE_LABEL_FONTSIZE))
-        ticksize(ax, PROFILE_TICK_FONTSIZE)
-        ax.grid(False)
-    sector_handles = [
-        Line2D([], [], color=SECTOR_COLORS[s], marker="o", ls="-", lw=2.0,
-               markersize=5.5, label=s.capitalize())
-        for s in SECTORS
-    ]
-    axes[0].legend(
-        handles=[legend_handles[s] for s in SECTORS],
-        loc=PROFILE_LEGEND_LOC,
-        frameon=True,
-        fancybox=True,
-        edgecolor="0.8",
-        fontsize=PROFILE_LEGEND_FONTSIZE,
-    )
-    fig.tight_layout(pad=PROFILE_PAD, w_pad=PROFILE_W_PAD)
-    fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
-    plt.close(fig)
-    if residual_path is not None:
-        plot_residuals(models, residual_path)
-    return all_stats
-
-
 def print_fit_statistics_table(all_stats):
     """Print best-fit statistics with dof = (number of aperture radii) - (number of fitted parameters)."""
     mass_bins = ("11.0-11.4", "11.4-11.7", "11.7-12.0")
@@ -659,9 +724,10 @@ def print_fit_statistics_table(all_stats):
         print(format_row(row))
     print("Gaussian PTE = Pr[chi^2(dof) >= observed chi^2]\n")
 
+
 def plot_residuals(models, out_path):
     """Plot data minus best-fit prediction for all mass bins and sectors."""
-    fig, axes = plt.subplots(1, 3, figsize=PROFILE_FIGSIZE, sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=RESIDUAL_FIGSIZE, sharey=False)
     for mass_bin, ax in enumerate(axes):
         for sector in SECTORS:
             likeli, theory_tot, _ = models[(mass_bin, sector)]
@@ -675,20 +741,20 @@ def plot_residuals(models, out_path):
                 residual * 1e6,
                 yerr=err * 1e6,
                 fmt="o",
-                ms=PROFILE_MARKER_SIZE,
-                capsize=PROFILE_CAPSIZE,
+                ms=RESIDUAL_MARKER_SIZE,
+                capsize=RESIDUAL_CAPSIZE,
                 color=SECTOR_COLORS[sector],
                 label=sector.capitalize(),
             )
         ax.axhline(0.0, color="0.35", lw=1.0, ls="--")
-        ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(PROFILE_TITLE_FONTSIZE))
-        ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(PROFILE_LABEL_FONTSIZE))
+        ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(RESIDUAL_TITLE_FONTSIZE))
+        ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(RESIDUAL_LABEL_FONTSIZE))
         if mass_bin == 0:
             ax.set_ylabel(
                 r"$(y_{\rm data}-y_{\rm model})\ [10^{-6}\,{\rm arcmin}^2]$",
-                **fontsize(PROFILE_LABEL_FONTSIZE),
+                **fontsize(RESIDUAL_LABEL_FONTSIZE),
             )
-        ticksize(ax, PROFILE_TICK_FONTSIZE)
+        ticksize(ax, RESIDUAL_TICK_FONTSIZE)
         ax.grid(False)
     fig.legend(
         handles=[
@@ -697,20 +763,19 @@ def plot_residuals(models, out_path):
             for s in SECTORS
         ],
         loc="lower center",
-        bbox_to_anchor=(0.5, PROFILE_LEGEND_Y),
+        bbox_to_anchor=(0.5, RESIDUAL_LEGEND_Y),
         ncol=2,
         frameon=False,
-        fontsize=PROFILE_LEGEND_FONTSIZE,
+        fontsize=RESIDUAL_LEGEND_FONTSIZE,
     )
-    fig.tight_layout(rect=(0.0, PROFILE_LEGEND_SPACE, 1.0, 1.0),
-                     pad=PROFILE_PAD, w_pad=PROFILE_W_PAD)
+    fig.tight_layout(rect=(0.0, RESIDUAL_LEGEND_SPACE, 1.0, 1.0),
+                     pad=RESIDUAL_PAD, w_pad=RESIDUAL_W_PAD)
     fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
 
 
 def main():
     args = parse_args()
-    set_plot_style("default")
     out_dir = (
         Path(args.output_dir)
         if args.output_dir
@@ -725,18 +790,27 @@ def main():
             roots[(mass_bin, sector)] = root
             samples[(mass_bin, sector)] = load_getdist(root, args.ignore_rows)
     cache = prepare_posteriors(samples)
-    posterior_path = out_dir / f"{args.job_prefix}_posteriors_3x3.pdf"
-    profile_path = out_dir / f"{args.job_prefix}_profiles_1x3.pdf"
-    residual_path = out_dir / f"{args.job_prefix}_residuals_1x3.pdf"
-    plot_posteriors(cache, posterior_path)
-    fit_stats = plot_profiles(samples, roots, profile_path, residual_path=residual_path)
-    print_fit_statistics_table(fit_stats)
-    plot_corners(samples, cache, out_dir, args.job_prefix)
-    difference_path = out_dir / f"{args.job_prefix}_P0_minor_minus_major_1x3.pdf"
-    plot_differences(
-        samples, difference_path, args.seed, args.difference_draws,
-    )
+    models = {
+        key: load_model_at_best(roots[key], samples[key])
+        for key in roots
+    }
+    fit_stats = {key: model[2] for key, model in models.items()}
 
+    # Set the style only after the models are built: importing the
+    # likelihood/theory code during get_model can change matplotlib's style.
+    set_plot_style("default")
+    force_light_style()
+
+    posterior_path = out_dir / f"{args.job_prefix}_posteriors_3x3.pdf"
+    residual_path = out_dir / f"{args.job_prefix}_residuals_1x3.pdf"
+    combined_path = out_dir / f"{args.job_prefix}_corners_profiles.pdf"
+    difference_path = out_dir / f"{args.job_prefix}_P0_minor_minus_major_1x3.pdf"
+
+    plot_posteriors(cache, posterior_path)
+    plot_residuals(models, residual_path)
+    print_fit_statistics_table(fit_stats)
+    plot_combined(samples, cache, models, combined_path)
+    plot_differences(samples, difference_path, args.seed, args.difference_draws)
 
 if __name__ == "__main__":
     main()
