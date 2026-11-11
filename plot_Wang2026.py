@@ -9,10 +9,16 @@ from matplotlib.lines import Line2D
 from scipy.special import erfinv
 from scipy.stats import gaussian_kde, chi2 as chi2_distribution
 from config import OUTPUT_PATH, set_plot_style
-from plot_chains import get_param_results
+
 PARAMS = ["P0", "beta_P", "A_2h_P"]
 PARAM_LABELS = [r"$P_0$", r"$\beta_P$", r"$A_{2h,P}$"]
 SECTORS = ["major", "minor"]
+
+
+CORNER_PARAMS = ["P0", "beta_P"]
+CORNER_LABELS = [r"$P_0$", r"$\beta_P$"]
+PROFILE_LEGEND_LOC = "upper left"
+
 CAP_MAJOR_COLOR = "#771704"
 CAP_MINOR_COLOR = "#5b7fa6"
 SECTOR_COLORS = {
@@ -37,7 +43,7 @@ DEFAULT_DIFFERENCE_DRAWS = 10000
 DEFAULT_RANDOM_SEED = 2026
 DIFFERENCE_FIGSIZE = (15, 4.6)
 DIFFERENCE_XLIMITS = [(-60, 60), (-5, 7.5), (-10, 20)]
-CORNER_FIGSIZE = (18.0, 12.0)
+CORNER_FIGSIZE = (13.0, 8.5)
 CORNER_BLOCK_WSPACE = 0.02
 CORNER_BLOCK_HSPACE = 0.03
 CORNER_PANEL_WSPACE = 0.0
@@ -63,7 +69,7 @@ PROFILE_PAD = 0.2
 PROFILE_W_PAD = 0
 PROFILE_LEGEND_SPACE = 0.08
 PROFILE_LEGEND_Y = -0.015
-PROFILE_LEGEND_FONTSIZE = 10
+PROFILE_LEGEND_FONTSIZE = 13
 PROFILE_TITLE_FONTSIZE = 11
 PROFILE_LABEL_FONTSIZE = 10
 PROFILE_TICK_FONTSIZE = None
@@ -82,7 +88,7 @@ def ticksize(ax, size):
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--job-prefix", default="Wang2026_gnfw_noradio")
+    p.add_argument("--job-prefix", default="Wang2026_gnfw_noradio_16")
     p.add_argument("--output-dir", default=None)
     p.add_argument(
         "--ignore-rows",
@@ -125,18 +131,20 @@ def best_chain_params(root, gd):
     names = gd.paramNames.list()
     col = {name: i for i, name in enumerate(names)}
     params = {}
+    sampled = []
     for name, spec in info["params"].items():
         if isinstance(spec, dict) and "prior" in spec:
             params[name] = float(gd.samples[best_row, col[name]])
+            sampled.append(name)
         elif isinstance(spec, dict) and "value" in spec:
             params[name] = spec["value"]
         else:
             params[name] = spec
-    return info, params
+    return info, params, sampled
 
 
 def load_model_at_best(root, gd):
-    info, params = best_chain_params(root, gd)
+    info, params, sampled = best_chain_params(root, gd)
     model_info = {
         key: info[key]
         for key in ("likelihood", "params", "theory")
@@ -144,24 +152,30 @@ def load_model_at_best(root, gd):
     }
     model = cobaya.get_model(model_info)
     likelihoods = model.likelihood
-    lname = next(iter(likelihoods))
-    likeli = likelihoods[lname]
-    result = get_param_results(params, likelihoods)[lname]
-    theory_1h = np.asarray(result["1h"], dtype=float)
-    theory_2h = np.asarray(result["2h"], dtype=float)
+    likeli = likelihoods[next(iter(likelihoods))]
     theory_tot = np.asarray(likeli.model(params).value, dtype=float)
     data = np.asarray(likeli.data.y, dtype=float)
     inv_cov = np.asarray(likeli.data.inv_cov, dtype=float)
     delta = data - theory_tot
     chi2 = float(delta @ inv_cov @ delta)
+    n_data = int(data.size)
+    n_params = len(sampled)
+    dof = n_data - n_params
+    if dof <= 0:
+        raise ValueError(
+            f"{root}: {n_data} aperture radii but {n_params} fitted parameters "
+            f"({sampled}); degrees of freedom = {dof}."
+        )
     stats = {
         "chi2": chi2,
-        "reduced_chi2": chi2 / 4.0,
-        "gaussian_pte": float(chi2_distribution.sf(chi2, df=4)),
+        "n_data": n_data,
+        "n_params": n_params,
+        "dof": dof,
+        "reduced_chi2": chi2 / dof,
+        "gaussian_pte": float(chi2_distribution.sf(chi2, df=dof)),
         "params": {name: params[name] for name in PARAMS},
     }
-    return likeli, theory_1h, theory_2h, theory_tot, stats
-
+    return likeli, theory_tot, stats
 
 def posterior_limits(roots, cache, params=PARAMS):
     extents = {param: [] for param in params}
@@ -431,15 +445,16 @@ def plot_differences(samples, out_path, seed, draws):
 
 
 def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margins):
-    axes = subfig.subplots(3, 3)
+    n = len(CORNER_PARAMS)
+    axes = subfig.subplots(n, n)
     subfig.suptitle(panel_title, fontsize=CORNER_BLOCK_TITLE_FONTSIZE, y=CORNER_BLOCK_TITLE_Y)
-    for row in range(3):
-        for col in range(3):
+    for row in range(n):
+        for col in range(n):
             ax = axes[row, col]
             if col > row:
                 ax.set_visible(False)
                 continue
-            xparam = PARAMS[col]
+            xparam = CORNER_PARAMS[col]
             if row == col:
                 g.plot_1d(gd, xparam, ax=ax, colors=[color], normalized=False)
                 summary = cache[(*key, xparam)][1]
@@ -458,13 +473,13 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
                     ax.axvline(summary["mode"], color=color, lw=1.0, ls="--")
                 ax.set_ylim(0.0, 1.08)
                 ax.set_yticks([])
-                label = PARAM_LABELS[col].strip("$")
+                label = CORNER_LABELS[col].strip("$")
                 ax.set_title(
                     rf"${label} {summarize(summary, latex=True)}$",
                     fontsize=CORNER_VALUE_FONTSIZE,
                 )
             else:
-                yparam = PARAMS[row]
+                yparam = CORNER_PARAMS[row]
                 g.plot_2d(
                     gd, xparam, yparam, ax=ax,
                     filled=True, colors=[color], add_legend_proxy=False,
@@ -473,18 +488,18 @@ def draw_one_corner(g, subfig, gd, key, cache, color, limits, panel_title, margi
             ax.set_xlim(*limits[xparam])
             ticksize(ax, CORNER_TICK_FONTSIZE)
             ax.grid(False)
-            ax.set_xlabel(PARAM_LABELS[col] if row == 2 else "", fontsize=CORNER_LABEL_FONTSIZE)
-            if row != 2:
+            ax.set_xlabel(CORNER_LABELS[col] if row == n - 1 else "",
+                          fontsize=CORNER_LABEL_FONTSIZE)
+            if row != n - 1:
                 ax.tick_params(labelbottom=False)
             if col == 0 and row > 0:
-                ax.set_ylabel(PARAM_LABELS[row], fontsize=CORNER_LABEL_FONTSIZE)
+                ax.set_ylabel(CORNER_LABELS[row], fontsize=CORNER_LABEL_FONTSIZE)
             else:
                 ax.set_ylabel("")
                 if row != col:
                     ax.tick_params(labelleft=False)
     subfig.subplots_adjust(**margins,
                            wspace=CORNER_PANEL_WSPACE, hspace=CORNER_PANEL_HSPACE)
-
 
 def plot_corners(samples, cache, out_dir, job_prefix):
     out_path = out_dir / f"{job_prefix}_corners_2x3.pdf"
@@ -501,7 +516,8 @@ def plot_corners(samples, cache, out_dir, job_prefix):
     )
     for mass_bin in range(3):
         limits = posterior_limits(
-            [((mass_bin, s), samples[(mass_bin, s)]) for s in SECTORS], cache
+            [((mass_bin, s), samples[(mass_bin, s)]) for s in SECTORS],
+            cache, params=CORNER_PARAMS,
         )
         for row, sector in enumerate(SECTORS):
             if row == 0:
@@ -563,50 +579,29 @@ def plot_profiles(samples, roots, out_path, residual_path=None):
     set_plot_style("default")
     fig, axes = plt.subplots(1, 3, figsize=PROFILE_FIGSIZE, sharey=True)
     all_stats = {}
+    legend_handles = {}
     for mass_bin, ax in enumerate(axes):
         for sector in SECTORS:
-            likeli, theory_1h, theory_2h, theory_tot, stats = models[(mass_bin, sector)]
+            likeli, theory_tot, stats = models[(mass_bin, sector)]
             all_stats[(mass_bin, sector)] = stats
             R = np.asarray(likeli.R.to_value("arcmin"), dtype=float)
             data = np.asarray(likeli.meas_data.value, dtype=float)
             cov = np.asarray(likeli.meas_cov.value, dtype=float)
             err = np.sqrt(np.diag(cov))
             color = SECTOR_COLORS[sector]
-            R_data = R + POINT_X_OFFSETS[sector]
-            ax.errorbar(
-                R_data,
+            handle = ax.errorbar(
+                R + POINT_X_OFFSETS[sector],
                 data * 1e6,
                 yerr=err * 1e6,
                 fmt="o",
                 ms=PROFILE_MARKER_SIZE,
                 capsize=PROFILE_CAPSIZE,
                 color=color,
-                label=f"{sector.capitalize()} data",
+                label=f"{sector.capitalize()}-axis",
             )
-            ax.plot(
-                R,
-                theory_tot * 1e6,
-                color=color,
-                lw=2.0,
-                ls="-",
-                label=f"{sector.capitalize()} total",
-            )
-            ax.plot(
-                R,
-                theory_1h * 1e6,
-                color=color,
-                lw=1.6,
-                ls="--",
-                label=f"{sector.capitalize()} 1h",
-            )
-            ax.plot(
-                R,
-                theory_2h * 1e6,
-                color=color,
-                lw=1.6,
-                ls=":",
-                label=f"{sector.capitalize()} 2h",
-            )
+            if mass_bin == 0:
+                legend_handles[sector] = handle
+            ax.plot(R, theory_tot * 1e6, color=color, lw=2.0, ls="-")
         ax.set_title(MASS_BIN_LABELS[mass_bin], **fontsize(PROFILE_TITLE_FONTSIZE))
         ax.set_xlabel(r"$\theta_d\ [{\rm arcmin}]$", **fontsize(PROFILE_LABEL_FONTSIZE))
         if mass_bin == 0:
@@ -615,34 +610,19 @@ def plot_profiles(samples, roots, out_path, residual_path=None):
         ticksize(ax, PROFILE_TICK_FONTSIZE)
         ax.grid(False)
     sector_handles = [
-        Line2D(
-            [],
-            [],
-            color=SECTOR_COLORS[s],
-            marker="o",
-            ls="none",
-            markersize=5.5,
-            label=s.capitalize(),
-        )
+        Line2D([], [], color=SECTOR_COLORS[s], marker="o", ls="-", lw=2.0,
+               markersize=5.5, label=s.capitalize())
         for s in SECTORS
     ]
-    component_handles = [
-        Line2D([], [], color="0.25", ls="-", lw=2.0, label="Total"),
-        Line2D([], [], color="0.25", ls="--", lw=1.6, label="1-halo"),
-        Line2D([], [], color="0.25", ls=":", lw=1.8, label="2-halo"),
-    ]
-    fig.legend(
-        handles=sector_handles + component_handles,
-        loc="lower center",
-        bbox_to_anchor=(0.5, PROFILE_LEGEND_Y),
-        ncol=5,
-        frameon=False,
+    axes[0].legend(
+        handles=[legend_handles[s] for s in SECTORS],
+        loc=PROFILE_LEGEND_LOC,
+        frameon=True,
+        fancybox=True,
+        edgecolor="0.8",
         fontsize=PROFILE_LEGEND_FONTSIZE,
-        columnspacing=1.8,
-        handlelength=2.4,
     )
-    fig.tight_layout(rect=(0.0, PROFILE_LEGEND_SPACE, 1.0, 1.0),
-                     pad=PROFILE_PAD, w_pad=PROFILE_W_PAD)
+    fig.tight_layout(pad=PROFILE_PAD, w_pad=PROFILE_W_PAD)
     fig.savefig(out_path, bbox_inches="tight", pad_inches=SAVE_PAD_INCHES)
     plt.close(fig)
     if residual_path is not None:
@@ -651,9 +631,10 @@ def plot_profiles(samples, roots, out_path, residual_path=None):
 
 
 def print_fit_statistics_table(all_stats):
-    """Print best-fit statistics assuming four chi-square degrees of freedom."""
+    """Print best-fit statistics with dof = (number of aperture radii) - (number of fitted parameters)."""
     mass_bins = ("11.0-11.4", "11.4-11.7", "11.7-12.0")
-    headers = ("Mass bin (log10 M*/Msun)", "Sector", "Chi^2", "Reduced chi^2", "Gaussian PTE")
+    headers = ("Mass bin (log10 M*/Msun)", "Sector", "N_R", "N_par", "dof",
+               "Chi^2", "Reduced chi^2", "Gaussian PTE")
     rows = []
     for mass_bin, label in enumerate(mass_bins):
         for sector in SECTORS:
@@ -661,6 +642,9 @@ def print_fit_statistics_table(all_stats):
             rows.append((
                 label,
                 sector.capitalize(),
+                str(stats["n_data"]),
+                str(stats["n_params"]),
+                str(stats["dof"]),
                 f"{stats['chi2']:.3f}",
                 f"{stats['reduced_chi2']:.3f}",
                 f"{stats['gaussian_pte']:.4g}",
@@ -668,20 +652,19 @@ def print_fit_statistics_table(all_stats):
     widths = [max(len(str(row[col])) for row in [headers, *rows]) for col in range(len(headers))]
     def format_row(row):
         return "  ".join(str(value).ljust(widths[col]) for col, value in enumerate(row))
-    print("\nBest-fit profile statistics (4 degrees of freedom):")
+    print("\nBest-fit profile statistics (dof = N_R - N_par):")
     print(format_row(headers))
     print("  ".join("-" * width for width in widths))
     for row in rows:
         print(format_row(row))
-    print("Gaussian PTE = Pr[chi^2(df=4) >= observed chi^2]\n")
-
+    print("Gaussian PTE = Pr[chi^2(dof) >= observed chi^2]\n")
 
 def plot_residuals(models, out_path):
     """Plot data minus best-fit prediction for all mass bins and sectors."""
     fig, axes = plt.subplots(1, 3, figsize=PROFILE_FIGSIZE, sharey=False)
     for mass_bin, ax in enumerate(axes):
         for sector in SECTORS:
-            likeli, _, _, theory_tot, _ = models[(mass_bin, sector)]
+            likeli, theory_tot, _ = models[(mass_bin, sector)]
             R = np.asarray(likeli.R.to_value("arcmin"), dtype=float)
             data = np.asarray(likeli.meas_data.value, dtype=float)
             cov = np.asarray(likeli.meas_cov.value, dtype=float)
