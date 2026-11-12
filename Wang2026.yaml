@@ -6,7 +6,7 @@ likelihood:
 
     Measurement:
       name: Wang2026
-      profile_file: &paired_cap_npz /Users/jerrywang/Documents/Battaglia_research/Project1/Stacking_code_3bins/run_output/paired_sector_cap_bootstraps.npz
+      profile_file: &paired_cap_npz /Users/jerrywang/Documents/Battaglia_research/Project1/No_radio_15/run_output/paired_sector_cap_bootstraps.npz
       mass_bin: 0
       sector: major
 
@@ -48,11 +48,11 @@ shared:
 
   CAP:
     name: Wang2026
-    inner_radius_arcmin: 1.0
+    inner_radius_arcmin: 0
 
   Pressure:
     name: Popik2026
-    twohalofix: fixed
+    twohalofix: fixed   #vary
 
 params:
   P0:
